@@ -15,6 +15,11 @@ import carla
 import math
 
 
+def V3_to_Loc(v):
+    # Vector3 to carla.Location
+    return carla.Location(v.x, v.y, v.z)
+
+
 class VehicleController():
 
     def __init__(self, role_name='ego_vehicle'):
@@ -101,8 +106,16 @@ class VehicleDecision():
     def __init__(self, role_name='ego_vehicle'):
         self.subLaneMarker = rospy.Subscriber(
             "/carla/%s/lane_markers" % role_name, LaneInfo, self.lanemarkerCallback)
+
+        self.subLeftLaneMarker = rospy.Subscriber(
+            "/carla/%s/left_lane_markers" % role_name, LaneList, self.leftLanemarkerCallback)
+
+        self.subRightLaneMarker = rospy.Subscriber(
+            "/carla/%s/right_lane_markers" % role_name, LaneList, self.rightLanemarkerCallback)
+
         self.subWaypoint = rospy.Subscriber(
             "/carla/%s/waypoints" % role_name, WaypointInfo, self.waypointCallback)
+
         self.subVehicleInfo = rospy.Subscriber(
             "/carla/%s/vehicle_info" % role_name, CarlaEgoVehicleInfo, self.vehicleInfoCallback)
 
@@ -118,8 +131,10 @@ class VehicleDecision():
         self.plan = None
         self.reachEnd = False
 
-        self.milestones = []
+        self.milestone = None
         self.lane_info = None
+        self.left_bound = None
+        self.right_bound = None
 
         # For debuggin purposes. TODO delete later
         host = rospy.get_param('~host', 'localhost')
@@ -130,21 +145,22 @@ class VehicleDecision():
     def lanemarkerCallback(self, data):
         self.lane_info = data
 
+    def leftLanemarkerCallback(self, data):
+        self.left_bound = data
+        for v in data.location:
+            loc = carla.Location(v.x, v.y, v.z)
+            self.world.debug.draw_point(loc, life_time=0.1)
+
+    def rightLanemarkerCallback(self, data):
+        self.right_bound = data
+        for v in data.location:
+            loc = carla.Location(v.x, v.y, v.z)
+            self.world.debug.draw_point(loc, life_time=0.1)
+
     def waypointCallback(self, data):
         self.reachEnd = data.reachedFinal
-
-        # Store the latest two milestones
-        loc = carla.Location(data.location.x, data.location.y, data.location.z)
-        if len(self.milestones) == 0:
-            self.milestones = [loc]
-            return
-        if loc == self.milestones[-1]:
-            return
-        if len(self.milestones) == 1:
-            self.milestones += [loc]
-        else:
-            self.milestones[0] = self.milestones[1]
-            self.milestones[1] = loc
+        self.milestone = carla.Location(
+            data.location.x, data.location.y, data.location.z)
 
     def vehicleInfoCallback(self, data):
         p = [w.position for w in data.wheels]
@@ -211,57 +227,37 @@ class VehicleDecision():
 
     def pubVoronoiObstacles(self, currentState, dynamicObstacles):
         obstacles = []
-        rot_90 = carla.Transform(
-            carla.Location(), carla.Rotation(0, 90, 0))
+
         # If no milestones seen so far
-        if len(self.milestones) == 0:
+        if not self.milestone:
             print('No milestones seen yet!')
             return
-
-        # Infer direction of the road
-        if self.lane_info:
-            num_lanes = 3
-            wl = self.lane_info.lane_markers_left.location[-1]
-            wr = self.lane_info.lane_markers_right.location[-1]
-
-            wl = carla.Location(wl.x, wl.y, wl.z)
-            wr = carla.Location(wr.x, wr.y, wr.z)
-            dir_lat = (wr-wl)*num_lanes/2
-            dir_lon = carla.Location(dir_lat)
-            rot_90.transform(dir_lon)
-        else:
-            print('No lane info yet!')
+        if not self.left_bound or not self.right_bound:
+            print('No road boundaries yet!')
             return
 
-        # If only one waypoint seen so far
-        if len(self.milestones) == 1:
-            m = self.milestones[0]
-            obstacles += [(m+dir_lat-dir_lon, m+dir_lat+dir_lon),
-                          (m-dir_lat-dir_lon, m-dir_lat+dir_lon)]
-        elif len(self.milestones) == 2:
-            # connect the last two waypoints to get the road center line
-            m0, m1 = tuple(self.milestones)
-            dir_lon = m1-m0
-            dir_lon_size = math.sqrt(dir_lon.x**2 + dir_lon.y**2)
-            dir_lat = rot_90.transform(dir_lon)/dir_lon_size
+        left = V3_to_Loc(self.left_bound.location[-1])
+        right = V3_to_Loc(self.right_bound.location[-1])
+        center = left*0.5 + right*0.5
+        ext_size = 8  # meters
+        ext = (self.milestone - center) * ext_size / \
+            self.milestone.distance(center)
 
-            # offset the center line by 7 meters each side to get road boundaries
-            offset = 7.0  # meters
-            obstacles += [(m0 + dir_lat*offset, m1 + dir_lat*offset),
-                          (m0 - dir_lat*offset, m1 - dir_lat*offset)]
+        milestone = center+ext
+        obstacles += [(left, left+ext),
+                      (right, right+ext)]
 
         for obs in obstacles:
             self.world.debug.draw_line(
                 obs[0], obs[1], thickness=0.5, life_time=0.1)
 
-        car_loc = currentState[0]
-        milestone = self.milestones[-1] + dir_lon
         self.world.debug.draw_line(
             milestone, milestone+carla.Location(0, 0, 5), color=carla.Color(0, 255, 0), life_time=0.1)
 
         # Publish
         data = VoronoiPlannerInput()
-        data.car_location = Vector3(car_loc[0], car_loc[1], 0.0)
+        data.car_location = Vector3(
+            currentState[0][0], currentState[0][1], 0.0)
         data.milestone = Vector3(milestone.x, milestone.y, 0.0)
         for obs in obstacles:
             start = Vector3(obs[0].x, obs[0].y, 0.0)
