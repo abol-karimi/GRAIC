@@ -1,0 +1,404 @@
+import rospy
+import numpy as np
+import argparse
+import time
+from graic_msgs.msg import ObstacleList, ObstacleInfo
+from graic_msgs.msg import LocationInfo, WaypointInfo
+from ackermann_msgs.msg import AckermannDrive
+from carla_msgs.msg import CarlaEgoVehicleControl, CarlaEgoVehicleInfo
+from graic_msgs.msg import LaneList
+from graic_msgs.msg import LaneInfo
+
+from voronoi.msg import LineSegment, VoronoiPlannerInput, VoronoiPlannerOutput
+from geometry_msgs.msg import Vector3
+import carla
+import math
+
+
+class VehicleController():
+
+    def __init__(self, role_name='ego_vehicle'):
+        # Publisher to publish the control input to the vehicle model
+        self.role_name = role_name
+        self.controlPub = rospy.Publisher(
+            "/carla/%s/ackermann_control" % role_name, AckermannDrive, queue_size=1)
+        self.subVehicleInfo = rospy.Subscriber(
+            "/carla/%s/vehicle_info" % role_name, CarlaEgoVehicleInfo, self.vehicleInfoCallback)
+
+        # For debuggin purposes. TODO delete later
+        host = rospy.get_param('~host', 'localhost')
+        port = rospy.get_param('~port', 2000)
+        client = carla.Client(host, port)
+        self.world = client.get_world()
+
+        self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
+
+    def vehicleInfoCallback(self, data):
+        p = [w.position for w in data.wheels]
+        r2f_x = 0.5*(p[0].x + p[1].x - (p[2].x + p[3].x))
+        r2f_y = 0.5*(p[0].y + p[1].y - (p[2].y + p[3].y))
+        self.wheelbase = np.linalg.norm([r2f_x, r2f_y])
+        print(f'Controller set wheelbase to {self.wheelbase} meters.')
+
+    def stop(self):
+        newAckermannCmd = AckermannDrive()
+        newAckermannCmd.acceleration = -20
+        newAckermannCmd.speed = 0
+        newAckermannCmd.steering_angle = 0
+        self.controlPub.publish(newAckermannCmd)
+
+    def execute(self, currentState, targetState):
+        """
+            This function takes the current state of the vehicle and
+            the target state to compute low-level control input to the vehicle
+            Inputs:
+                currentPose: ModelState, the current state of vehicle
+                targetPose: The desired state of the vehicle
+        """
+        if not targetState[0] or not targetState[1]:
+            return
+
+        currentEuler = currentState[1]
+        curr_x = currentState[0][0]
+        curr_y = currentState[0][1]
+
+        car_loc = carla.Location(curr_x, curr_y, 0)
+        car_rot = carla.Rotation(0, np.degrees(currentEuler[2]), 0)
+        car2map = carla.Transform(car_loc, car_rot)
+        rear_axle = car2map.transform(
+            carla.Location(-self.wheelbase/2.0, 0, 0))
+
+        target_x = targetState[0]
+        target_y = targetState[1]
+        target_v = targetState[2]
+
+        dx = target_x - curr_x
+        dy = target_y - curr_y
+        # Rotate (dx, dy) by -currentEuler[2] radians
+        xError = dx*np.cos(currentEuler[2]) + dy*np.sin(currentEuler[2])
+        yError = -dx*np.sin(currentEuler[2]) + dy*np.cos(currentEuler[2])
+
+        # transform (xError, yError) to wheelbase coordinates
+        xError += self.wheelbase/2.0
+
+        end = car2map.transform(carla.Location(xError, yError, 0))
+        self.world.debug.draw_line(rear_axle, end, life_time=0.1)
+
+        # pure-pursuit steering rule
+        import math
+        d2 = xError**2 + yError**2
+        steer_rad = math.atan(2 * self.wheelbase * yError / d2)
+
+        # print(f'steer_rad: {steer_rad:8}, target_v: {target_v: 8}')
+
+        newAckermannCmd = AckermannDrive()
+        newAckermannCmd.speed = target_v
+        newAckermannCmd.steering_angle = steer_rad
+        self.controlPub.publish(newAckermannCmd)
+
+
+class VehicleDecision():
+    def __init__(self, role_name='ego_vehicle'):
+        self.subLaneMarker = rospy.Subscriber(
+            "/carla/%s/lane_markers" % role_name, LaneInfo, self.lanemarkerCallback)
+        self.subWaypoint = rospy.Subscriber(
+            "/carla/%s/waypoints" % role_name, WaypointInfo, self.waypointCallback)
+        self.subVehicleInfo = rospy.Subscriber(
+            "/carla/%s/vehicle_info" % role_name, CarlaEgoVehicleInfo, self.vehicleInfoCallback)
+
+        self.voronoiPub = rospy.Publisher(
+            "/voronoi_input", VoronoiPlannerInput, queue_size=1)
+        self.subVoronoi = rospy.Subscriber(
+            "/voronoi_output", VoronoiPlannerOutput, self.planCallback)
+
+        self.lookahead = 8.0  # meters
+        self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
+        self.speed = 10
+
+        self.plan = None
+        self.reachEnd = False
+
+        self.milestones = []
+        self.lane_info = None
+
+        # For debuggin purposes. TODO delete later
+        host = rospy.get_param('~host', 'localhost')
+        port = rospy.get_param('~port', 2000)
+        client = carla.Client(host, port)
+        self.world = client.get_world()
+
+    def lanemarkerCallback(self, data):
+        self.lane_info = data
+
+    def waypointCallback(self, data):
+        self.reachEnd = data.reachedFinal
+
+        # Store the latest two milestones
+        loc = carla.Location(data.location.x, data.location.y, data.location.z)
+        if len(self.milestones) == 0:
+            self.milestones = [loc]
+            return
+        if loc == self.milestones[-1]:
+            return
+        if len(self.milestones) == 1:
+            self.milestones += [loc]
+        else:
+            self.milestones[0] = self.milestones[1]
+            self.milestones[1] = loc
+
+    def vehicleInfoCallback(self, data):
+        p = [w.position for w in data.wheels]
+        r2f_x = 0.5*(p[0].x + p[1].x - (p[2].x + p[3].x))
+        r2f_y = 0.5*(p[0].y + p[1].y - (p[2].y + p[3].y))
+        self.wheelbase = np.linalg.norm([r2f_x, r2f_y])
+        print(f'Planner set wheelbase to {self.wheelbase} meters.')
+
+    def planCallback(self, data):
+        self.plan = [carla.Location(v.x, v.y, 0.5) for v in data.plan]
+
+        for i in range(len(self.plan)-1):
+            self.world.debug.draw_line(
+                self.plan[i], self.plan[i+1], color=carla.Color(i*10, 0, 0), life_time=0.1)
+
+    def rearAxle_to_map(self, currentState, loc):
+        currentEuler = currentState[1]
+        curr_x = currentState[0][0]
+        curr_y = currentState[0][1]
+
+        car_loc = carla.Location(curr_x, curr_y, 0)
+        car_rot = carla.Rotation(0, np.degrees(currentEuler[2]), 0)
+        car2map = carla.Transform(car_loc, car_rot)
+        loc_in_car = loc - carla.Location(self.wheelbase/2., .0, .0)
+        return car2map.transform(loc_in_car)
+
+    def map_to_rearAxle(self, currentState, loc):
+        currentEuler = currentState[1]
+        car_rot = carla.Rotation(0, np.degrees(currentEuler[2]), 0)
+
+        forward = car_rot.get_forward_vector()
+        right = car_rot.get_right_vector()
+
+        ra = self.rearAxle(currentState)
+        v = loc - ra
+        vx = forward.x * v.x + forward.y * v.y
+        vy = right.x * v.x + right.y * v.y
+        return carla.Location(vx, vy, 0)
+
+    def rearAxle(self, currentState):  # TODO use map_to_rearAxle instead
+        currentEuler = currentState[1]
+        curr_x = currentState[0][0]
+        curr_y = currentState[0][1]
+        car_loc = carla.Location(curr_x, curr_y, 0)
+        car_rot = carla.Rotation(0, np.degrees(currentEuler[2]), 0)
+        car2map = carla.Transform(car_loc, car_rot)
+        rear_axle = car2map.transform(
+            carla.Location(-self.wheelbase/2.0, 0, 0))
+        return rear_axle
+
+    def ccw(self, points):
+        # Sort vertices of a convex polygon counter-clockwise
+        ps = sorted(points, key=lambda p: p.x)
+        pccw = []
+        for p in ps[1:]:
+            v = p-ps[0]
+            l = math.sqrt(v.x**2+v.y**2)
+            if (l < 0.001):  # Bicycles are thin
+                continue
+            sin = v.y/l
+            pccw.append((sin, p))
+        pccw.sort(key=lambda pair: pair[0])
+        return [ps[0]] + [p[1] for p in pccw]
+
+    def pubVoronoiObstacles(self, currentState, dynamicObstacles):
+        obstacles = []
+        rot_90 = carla.Transform(
+            carla.Location(), carla.Rotation(0, 90, 0))
+        # If no milestones seen so far
+        if len(self.milestones) == 0:
+            print('No milestones seen yet!')
+            return
+
+        # Infer direction of the road
+        if self.lane_info:
+            num_lanes = 3
+            wl = self.lane_info.lane_markers_left.location[-1]
+            wr = self.lane_info.lane_markers_right.location[-1]
+
+            wl = carla.Location(wl.x, wl.y, wl.z)
+            wr = carla.Location(wr.x, wr.y, wr.z)
+            dir_lat = (wr-wl)*num_lanes/2
+            dir_lon = carla.Location(dir_lat)
+            rot_90.transform(dir_lon)
+        else:
+            print('No lane info yet!')
+            return
+
+        # If only one waypoint seen so far
+        if len(self.milestones) == 1:
+            m = self.milestones[0]
+            obstacles += [(m+dir_lat-dir_lon, m+dir_lat+dir_lon),
+                          (m-dir_lat-dir_lon, m-dir_lat+dir_lon)]
+        elif len(self.milestones) == 2:
+            # connect the last two waypoints to get the road center line
+            m0, m1 = tuple(self.milestones)
+            dir_lon = m1-m0
+            dir_lon_size = math.sqrt(dir_lon.x**2 + dir_lon.y**2)
+            dir_lat = rot_90.transform(dir_lon)/dir_lon_size
+
+            # offset the center line by 7 meters each side to get road boundaries
+            offset = 7.0  # meters
+            obstacles += [(m0 + dir_lat*offset, m1 + dir_lat*offset),
+                          (m0 - dir_lat*offset, m1 - dir_lat*offset)]
+
+        for obs in obstacles:
+            self.world.debug.draw_line(
+                obs[0], obs[1], thickness=0.5, life_time=0.1)
+
+        car_loc = currentState[0]
+        milestone = self.milestones[-1] + dir_lon
+        self.world.debug.draw_line(
+            milestone, milestone+carla.Location(0, 0, 5), color=carla.Color(0, 255, 0), life_time=0.1)
+
+        # Publish
+        data = VoronoiPlannerInput()
+        data.car_location = Vector3(car_loc[0], car_loc[1], 0.0)
+        data.milestone = Vector3(milestone.x, milestone.y, 0.0)
+        for obs in obstacles:
+            start = Vector3(obs[0].x, obs[0].y, 0.0)
+            end = Vector3(obs[1].x, obs[1].y, 0.0)
+            data.obstacles.append(LineSegment(start, end))
+
+        for obs in dynamicObstacles:
+            poly = []
+            for i in range(0, len(obs.vertices_locations), 2):
+                vec = obs.vertices_locations[i].vertex_location
+                poly.append(carla.Location(vec.x, vec.y, 0.0))
+            poly = self.ccw(poly)
+            for i in range(len(poly)):
+                start = Vector3(poly[i-1].x, poly[i-1].y, 0.0)
+                end = Vector3(poly[i].x, poly[i].y, 0.0)
+                data.obstacles.append(LineSegment(start, end))
+
+        self.voronoiPub.publish(data)
+
+    def get_ref_state(self, currentState, obstacleList):
+        """
+            Get the reference state for the vehicle according to the current state and result from perception module
+            Inputs:
+                currentState: [Loaction, Rotation, Velocity] the current state of vehicle
+                obstacleList: List of obstacles
+            Outputs: reference state position and velocity of the vehicle
+        """
+        if self.reachEnd:
+            return None
+
+        # Publish obstacles for VoronoiPlanner
+        self.pubVoronoiObstacles(currentState, obstacleList)
+
+        if not self.plan:
+            print('No plans received yet.')
+            return [0.0, 0.0, 0.0]
+
+        # Find the waypoint with lookahead distance from real axle
+        ra = self.rearAxle(currentState)
+        for i, loc in enumerate(self.plan):
+            if (loc.x-ra.x)**2 + (loc.y-ra.y)**2 > self.lookahead**2:
+                break
+        p_in = self.map_to_rearAxle(currentState, self.plan[i-1])
+        p_out = self.map_to_rearAxle(currentState, self.plan[i])
+
+        p_in_map = self.rearAxle_to_map(currentState, p_in)
+        p_out_map = self.rearAxle_to_map(currentState, p_out)
+        self.world.debug.draw_line(
+            p_in_map, p_in_map+carla.Location(0, 0, 2), life_time=0.1)
+        self.world.debug.draw_line(
+            p_out_map, p_out_map+carla.Location(0, 0, 2), life_time=0.1)
+
+        # Intercept the lookahead circle with the plan segment (p_in, p_out)
+        x1 = p_in.x
+        y1 = p_in.y
+        x2 = p_out.x
+        y2 = p_out.y
+        dx = x2 - x1
+        dy = y2 - y1
+        A = dx * dx + dy * dy
+        B = x1 * dx + y1 * dy
+        C = x1 * x1 + y1 * y1 - self.lookahead**2
+        t = (-B + math.sqrt(B * B - A * C)) / A
+
+        target_in_rearAxle = carla.Location(x1+t*dx, y1+t*dy, 0)
+        target = self.rearAxle_to_map(currentState, target_in_rearAxle)
+
+        # The latest target computed by plannerCallback
+        return [target.x, target.y, self.speed]
+
+
+class VehiclePerception:
+    def __init__(self, role_name='ego_vehicle'):
+        self.locationSub = rospy.Subscriber(
+            "/carla/%s/location" % role_name, LocationInfo, self.locationCallback)
+        self.obstacleSub = rospy.Subscriber(
+            "/carla/%s/obstacles" % role_name, ObstacleList, self.obstacleCallback)
+        self.position = None
+        self.velocity = None
+        self.rotation = None
+        self.obstacleList = None
+
+    def locationCallback(self, data):
+        self.position = (data.location.x, data.location.y)
+        self.rotation = (np.radians(data.rotation.x), np.radians(
+            data.rotation.y), np.radians(data.rotation.z))
+        self.velocity = (data.velocity.x, data.velocity.y)
+
+    def obstacleCallback(self, data):
+        self.obstacleList = data.obstacles
+
+
+def run_model(role_name):
+
+    rate = rospy.Rate(100)  # 100 Hz
+
+    perceptionModule = VehiclePerception(role_name=role_name)
+    decisionModule = VehicleDecision(role_name)
+    controlModule = VehicleController(role_name=role_name)
+
+    def shut_down():
+        controlModule.stop()
+    rospy.on_shutdown(shut_down)
+
+    print("Starter code is running")
+
+    while not rospy.is_shutdown():
+        rate.sleep()  # Wait a while before trying to get a new state
+        obstacleList = perceptionModule.obstacleList
+
+        # Get the current position and orientation of the vehicle
+        currState = (perceptionModule.position,
+                     perceptionModule.rotation, perceptionModule.velocity)
+        if not currState or not currState[0]:
+            continue
+
+        # Get the target state from decision module
+        refState = decisionModule.get_ref_state(currState, obstacleList)
+        if not refState:
+            controlModule.stop()
+            exit(0)
+
+        # Execute
+        controlModule.execute(currState, refState)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Running vechile")
+
+    role_name_default = 'ego_vehicle'
+
+    parser.add_argument(
+        '--name', type=str, help='Rolename of the vehicle', default=role_name_default)
+    argv = parser.parse_args()
+    role_name = argv.name
+    rospy.init_node("baseline")
+    try:
+        run_model(role_name)
+    except rospy.exceptions.ROSInterruptException:
+        print("stop")
