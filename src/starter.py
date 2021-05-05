@@ -108,12 +108,6 @@ class VehicleDecision():
         self.subLaneMarker = rospy.Subscriber(
             "/carla/%s/lane_markers" % role_name, LaneInfo, self.lanemarkerCallback)
 
-        self.subLeftLaneMarker = rospy.Subscriber(
-            "/carla/%s/left_lane_markers" % role_name, LaneList, self.leftLanemarkerCallback)
-
-        self.subRightLaneMarker = rospy.Subscriber(
-            "/carla/%s/right_lane_markers" % role_name, LaneList, self.rightLanemarkerCallback)
-
         self.subWaypoint = rospy.Subscriber(
             "/carla/%s/waypoints" % role_name, WaypointInfo, self.waypointCallback)
 
@@ -134,8 +128,6 @@ class VehicleDecision():
 
         self.milestone = None
         self.lane_info = None
-        self.left_bound = None
-        self.right_bound = None
 
         # For debuggin purposes. TODO delete later
         host = rospy.get_param('~host', 'localhost')
@@ -145,18 +137,6 @@ class VehicleDecision():
 
     def lanemarkerCallback(self, data):
         self.lane_info = data
-
-    def leftLanemarkerCallback(self, data):
-        self.left_bound = data
-        for v in data.location:
-            loc = carla.Location(v.x, v.y, v.z)
-            self.world.debug.draw_point(loc, life_time=0.1)
-
-    def rightLanemarkerCallback(self, data):
-        self.right_bound = data
-        for v in data.location:
-            loc = carla.Location(v.x, v.y, v.z)
-            self.world.debug.draw_point(loc, life_time=0.1)
 
     def waypointCallback(self, data):
         self.reachEnd = data.reachedFinal
@@ -233,20 +213,52 @@ class VehicleDecision():
         if not self.milestone:
             print('No milestones seen yet!')
             return
-        if not self.left_bound or not self.right_bound:
-            print('No road boundaries yet!')
+        if not self.lane_info:
+            print('No lane info yet!')
             return
 
-        left = V3_to_Loc(self.left_bound.location[-1])
-        right = V3_to_Loc(self.right_bound.location[-1])
-        center = left*0.5 + right*0.5
-        ext_size = 8  # meters
-        ext = (self.milestone - center) * ext_size / \
-            self.milestone.distance(center)
+        lane_right = V3_to_Loc(self.lane_info.lane_markers_right.location[-1])
+        lane_left = V3_to_Loc(self.lane_info.lane_markers_left.location[-1])
 
-        milestone = center+ext
-        obstacles += [(left, left+ext),
-                      (right, right+ext)]
+        # lane_markers_* is w.r.t to opendrive not race direction
+        # so detect whether left and right boundaries are swapped
+        car_loc = carla.Location(currentState[0][0], currentState[0][1], 0)
+        v0 = lane_right-car_loc
+        v1 = lane_left-car_loc
+        if v0.x*v1.y-v0.y*v1.x > 0:
+            lane_right, lane_left = lane_left, lane_right
+
+        road_right = lane_right + \
+            (lane_right-lane_left) * \
+            abs(self.lane_info.RIGHT_LANE-self.lane_info.lane_state)
+        road_left = lane_left + \
+            (lane_left-lane_right) * \
+            abs(self.lane_info.LEFT_LANE-self.lane_info.lane_state)
+        road_center = road_right*0.5 + road_left*0.5
+
+        # Linear extrapolation after the last boundary,
+        # based on the direction from road center to milestone
+        ext_size = 16  # meters
+        center_to_milestone = self.milestone.distance(road_center)
+        if center_to_milestone > 8.0:
+            ext1 = (self.milestone - road_center) * ext_size \
+                / center_to_milestone
+        else:
+            lane_center_rot = carla.Rotation(
+                0, self.lane_info.lane_markers_center.rotation[-1].y, 0)
+            ext1 = lane_center_rot.get_forward_vector()*ext_size
+
+        # Linear interpolation between first and last boundaries
+        lane_center_start = V3_to_Loc(
+            self.lane_info.lane_markers_center.location[0])
+        lane_center_end = V3_to_Loc(
+            self.lane_info.lane_markers_center.location[-1])
+        ext0 = lane_center_start - lane_center_end
+
+        obstacles += [(road_left+ext0, road_left), (road_left, road_left+ext1),
+                      (road_right+ext0, road_right), (road_right, road_right+ext1)]
+
+        milestone = road_center+ext1*1.5
 
         for obs in obstacles:
             self.world.debug.draw_line(
