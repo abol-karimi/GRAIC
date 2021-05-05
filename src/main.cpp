@@ -4,6 +4,8 @@
 #include "voronoi/VoronoiPlannerInput.h"
 #include "voronoi/VoronoiPlannerOutput.h"
 #include <ostream>
+#include <signal.h>
+#include <functional>
 
 class ManageROS
 {
@@ -137,10 +139,24 @@ private:
     ros::Publisher marker_pub;
 };
 
+namespace
+{
+    std::function<void(int)> shutdown_handler;
+    void signal_handler(int signal) { shutdown_handler(signal); }
+} // namespace
+
 int main(int argc, char **argv)
 {
     ros::init(argc, argv, "voronoi_controller");
     ManageROS manageROS;
+
+    // Capture Ctr+C to stop the car.
+    signal(SIGINT, signal_handler);
+    shutdown_handler = [](int sig) {
+        usleep(1000);
+        ros::shutdown();
+        return EXIT_SUCCESS;
+    };
 
     ros::spin();
 
