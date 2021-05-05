@@ -1,5 +1,6 @@
 #include "ros/ros.h"
 #include "VoronoiPlanner.h"
+#include "voronoi/LineSegment.h"
 #include "voronoi/VoronoiPlannerInput.h"
 #include "voronoi/VoronoiPlannerOutput.h"
 #include <ostream>
@@ -7,8 +8,6 @@
 class ManageROS
 {
 public:
-    float allowed_obs_dist = 0.3f; // in meters
-
     ManageROS()
     {
         planner_sub = ros_node.subscribe<voronoi::VoronoiPlannerInput>("voronoi_input", 1, &ManageROS::OnVoronoiInput, this);
@@ -21,6 +20,7 @@ public:
         // Convert VoronoiPlannerInput
         point_type car_location(msg->car_location.x, msg->car_location.y);
         point_type milestone(msg->milestone.x, msg->milestone.y);
+        float allowed_obs_dist = msg->allowed_obs_dist;
         std::vector<segment_type>
             obstacles;
         for (auto &obs : msg->obstacles)
@@ -33,25 +33,37 @@ public:
         VoronoiPlanner planner;
         const std::vector<point_type> &plan = planner.GetPlan(car_location, milestone, obstacles, allowed_obs_dist);
 
-        Publish(plan);
+        std::vector<segment_type> roadmap;
+        planner.GetRoadmapSegments(roadmap);
+
+        Publish(plan, roadmap);
 
         // Visualize the obstacles and the plan
         DrawWalls(obstacles);
         DrawPlan(plan);
     }
 
-    void Publish(const std::vector<point_type> &plan) const
+    void Publish(const std::vector<point_type> &plan, std::vector<segment_type> &roadmap) const
     {
-        voronoi::VoronoiPlannerOutput outPlan;
+        voronoi::VoronoiPlannerOutput output;
         for (auto &point : plan)
         {
             geometry_msgs::Vector3 outPoint;
             outPoint.x = point.x();
             outPoint.y = point.y();
             outPoint.z = 0.0;
-            outPlan.plan.push_back(outPoint);
+            output.plan.push_back(outPoint);
         }
-        planner_pub.publish(outPlan);
+        for (auto &segment : roadmap)
+        {
+            voronoi::LineSegment outSegment;
+            outSegment.start.x = segment.low().x();
+            outSegment.start.y = segment.low().y();
+            outSegment.end.x = segment.high().x();
+            outSegment.end.y = segment.high().y();
+            output.roadmap.push_back(outSegment);
+        }
+        planner_pub.publish(output);
     }
 
 private:

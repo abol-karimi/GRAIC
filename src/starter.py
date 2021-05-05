@@ -120,6 +120,7 @@ class VehicleDecision():
 
         self.lookahead = 5.0  # meters
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
+        self.allowed_obs_dist = self.wheelbase
         self.speed = 10
 
         self.plan = None
@@ -155,6 +156,12 @@ class VehicleDecision():
         for i in range(len(self.plan)-1):
             self.world.debug.draw_line(
                 self.plan[i], self.plan[i+1], color=carla.Color(i*10, 0, 0), life_time=0.1)
+
+        roadmap = [(carla.Location(seg.start.x, seg.start.y, 0.5),
+                    carla.Location(seg.end.x, seg.end.y, 0.5)) for seg in data.roadmap]
+        for loc0, loc1 in roadmap:
+            self.world.debug.draw_line(
+                loc0, loc1, color=carla.Color(100, 100, 100), life_time=0.1)
 
     def rearAxle_to_map(self, currentState, loc):
         currentEuler = currentState[1]
@@ -272,6 +279,7 @@ class VehicleDecision():
 
         # Publish
         data = VoronoiPlannerInput()
+        data.allowed_obs_dist = self.allowed_obs_dist
         data.car_location = Vector3(front.x, front.y, 0.0)
         data.milestone = Vector3(milestone.x, milestone.y, 0.0)
         for obs in obstacles:
