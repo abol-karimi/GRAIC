@@ -121,7 +121,7 @@ class VehicleDecision():
         self.lookahead = 5.0  # meters
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
         self.allowed_obs_dist = self.wheelbase
-        self.speed = 10
+        self.speed = 15
 
         self.plan = None
         self.reachEnd = False
@@ -289,6 +289,8 @@ class VehicleDecision():
 
         for obs in dynamicObstacles:
             poly = []
+            if len(obs.vertices_locations) == 0:
+                continue
             for i in range(0, len(obs.vertices_locations), 2):
                 vec = obs.vertices_locations[i].vertex_location
                 poly.append(carla.Location(vec.x, vec.y, 0.0))
