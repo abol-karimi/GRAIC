@@ -151,17 +151,21 @@ class VehicleDecision():
         print(f'Planner set wheelbase to {self.wheelbase} meters.')
 
     def planCallback(self, data):
-        self.plan = [carla.Location(v.x, v.y, 1) for v in data.plan]
+        self.plan = [carla.Location(v.x, v.y, 0) for v in data.plan]
+        self.roadmap = [(carla.Location(seg.start.x, seg.start.y, 0),
+                         carla.Location(seg.end.x, seg.end.y, 0)) for seg in data.roadmap]
 
+        h0 = carla.Location(
+            0, 0, self.lane_info.lane_markers_center.location[-1].z + 0.5)
+        h1 = carla.Location(
+            0, 0, self.lane_info.lane_markers_center.location[-1].z + 1.0)
+
+        for loc0, loc1 in self.roadmap:
+            self.world.debug.draw_line(
+                loc0+h0, loc1+h0, color=carla.Color(100, 100, 100), life_time=0.1)
         for i in range(len(self.plan)-1):
             self.world.debug.draw_line(
-                self.plan[i], self.plan[i+1], color=carla.Color(i*10, 0, 0), life_time=0.1)
-
-        roadmap = [(carla.Location(seg.start.x, seg.start.y, 0.5),
-                    carla.Location(seg.end.x, seg.end.y, 0.5)) for seg in data.roadmap]
-        for loc0, loc1 in roadmap:
-            self.world.debug.draw_line(
-                loc0, loc1, color=carla.Color(100, 100, 100), life_time=0.1)
+                self.plan[i]+h1, self.plan[i+1]+h1, color=carla.Color(i*10, 0, 0), life_time=0.1)
 
     def rearAxle_to_map(self, currentState, loc):
         currentEuler = currentState[1]
