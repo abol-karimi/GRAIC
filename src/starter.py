@@ -76,7 +76,6 @@ class VehicleController():
 
         target_x = targetState[0]
         target_y = targetState[1]
-        target_v = targetState[2]
 
         dx = target_x - curr_x
         dy = target_y - curr_y
@@ -98,7 +97,7 @@ class VehicleController():
         # print(f'steer_rad: {steer_rad:8}, target_v: {target_v: 8}')
 
         newAckermannCmd = AckermannDrive()
-        newAckermannCmd.speed = target_v
+        newAckermannCmd.speed = targetState[2]
         newAckermannCmd.steering_angle = steer_rad
         self.controlPub.publish(newAckermannCmd)
 
@@ -119,7 +118,7 @@ class VehicleDecision():
         self.subVoronoi = rospy.Subscriber(
             "/voronoi_output", VoronoiPlannerOutput, self.planCallback)
 
-        self.lookahead = 8.0  # meters
+        self.lookahead = 5.0  # meters
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
         self.speed = 10
 
@@ -151,7 +150,7 @@ class VehicleDecision():
         print(f'Planner set wheelbase to {self.wheelbase} meters.')
 
     def planCallback(self, data):
-        self.plan = [carla.Location(v.x, v.y, 0.5) for v in data.plan]
+        self.plan = [carla.Location(v.x, v.y, 1) for v in data.plan]
 
         for i in range(len(self.plan)-1):
             self.world.debug.draw_line(
@@ -166,7 +165,7 @@ class VehicleDecision():
         car_rot = carla.Rotation(0, np.degrees(currentEuler[2]), 0)
         car2map = carla.Transform(car_loc, car_rot)
         loc_in_car = loc - carla.Location(self.wheelbase/2., .0, .0)
-        return car2map.transform(loc_in_car)
+        return carla.Location(car2map.transform(loc_in_car))
 
     def map_to_rearAxle(self, currentState, loc):
         currentEuler = currentState[1]
@@ -267,10 +266,13 @@ class VehicleDecision():
         self.world.debug.draw_line(
             milestone, milestone+carla.Location(0, 0, 5), color=carla.Color(0, 255, 0), life_time=0.1)
 
+        car_dir = carla.Rotation(0, np.degrees(
+            currentState[1][2]), 0).get_forward_vector()
+        front = car_loc + car_dir*self.wheelbase
+
         # Publish
         data = VoronoiPlannerInput()
-        data.car_location = Vector3(
-            currentState[0][0], currentState[0][1], 0.0)
+        data.car_location = Vector3(front.x, front.y, 0.0)
         data.milestone = Vector3(milestone.x, milestone.y, 0.0)
         for obs in obstacles:
             start = Vector3(obs[0].x, obs[0].y, 0.0)
@@ -309,34 +311,41 @@ class VehicleDecision():
             return [0.0, 0.0, 0.0]
 
         # Find the waypoint with lookahead distance from real axle
-        ra = self.rearAxle(currentState)
-        for i, loc in enumerate(self.plan):
-            if (loc.x-ra.x)**2 + (loc.y-ra.y)**2 > self.lookahead**2:
-                break
-        p_in = self.map_to_rearAxle(currentState, self.plan[i-1])
-        p_out = self.map_to_rearAxle(currentState, self.plan[i])
+        ra = self.rearAxle_to_map(currentState, carla.Location())
+        if ra.distance(self.plan[0]) >= self.lookahead:
+            print('Plan does not start in the lookahead disk!')
+            target = self.plan[0]
+        elif ra.distance(self.plan[-1]) <= self.lookahead:
+            print('Plan does not end outside of the lookahead disk!')
+            target = self.plan[-1]
+        else:
+            for i, loc in enumerate(self.plan):
+                if (loc.x-ra.x)**2 + (loc.y-ra.y)**2 > self.lookahead**2:
+                    break
+            p_in = self.map_to_rearAxle(currentState, self.plan[i-1])
+            p_out = self.map_to_rearAxle(currentState, self.plan[i])
 
-        p_in_map = self.rearAxle_to_map(currentState, p_in)
-        p_out_map = self.rearAxle_to_map(currentState, p_out)
-        self.world.debug.draw_line(
-            p_in_map, p_in_map+carla.Location(0, 0, 2), life_time=0.1)
-        self.world.debug.draw_line(
-            p_out_map, p_out_map+carla.Location(0, 0, 2), life_time=0.1)
+            p_in_map = self.rearAxle_to_map(currentState, p_in)
+            p_out_map = self.rearAxle_to_map(currentState, p_out)
+            self.world.debug.draw_line(
+                p_in_map, p_in_map+carla.Location(0, 0, 2), life_time=0.1)
+            self.world.debug.draw_line(
+                p_out_map, p_out_map+carla.Location(0, 0, 2), color=carla.Color(255, 255, 0), life_time=0.1)
 
-        # Intercept the lookahead circle with the plan segment (p_in, p_out)
-        x1 = p_in.x
-        y1 = p_in.y
-        x2 = p_out.x
-        y2 = p_out.y
-        dx = x2 - x1
-        dy = y2 - y1
-        A = dx * dx + dy * dy
-        B = x1 * dx + y1 * dy
-        C = x1 * x1 + y1 * y1 - self.lookahead**2
-        t = (-B + math.sqrt(B * B - A * C)) / A
+            # Intercept the lookahead circle with the plan segment (p_in, p_out)
+            x1 = p_in.x
+            y1 = p_in.y
+            x2 = p_out.x
+            y2 = p_out.y
+            dx = x2 - x1
+            dy = y2 - y1
+            A = dx * dx + dy * dy
+            B = x1 * dx + y1 * dy
+            C = x1 * x1 + y1 * y1 - self.lookahead**2
+            t = (-B + math.sqrt(B * B - A * C)) / A
 
-        target_in_rearAxle = carla.Location(x1+t*dx, y1+t*dy, 0)
-        target = self.rearAxle_to_map(currentState, target_in_rearAxle)
+            target_in_rearAxle = carla.Location(x1+t*dx, y1+t*dy, 0)
+            target = self.rearAxle_to_map(currentState, target_in_rearAxle)
 
         # The latest target computed by plannerCallback
         return [target.x, target.y, self.speed]
