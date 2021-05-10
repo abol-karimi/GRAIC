@@ -21,17 +21,12 @@ namespace boost
 	BOOST_INSTALL_PROPERTY(vertex, coordinates);
 }
 
-#include <ros/ros.h>
-#include <visualization_msgs/Marker.h>
-
 /**
  * 
  */
 class VoronoiPlanner
 {
 public:
-	VoronoiPlanner();
-	~VoronoiPlanner();
 	const std::vector<point_type> &GetPlan(const point_type &car_location, point_type milestone, const std::vector<segment_type> &Walls, float allowed_obs_dist);
 	void GetRoadmapPoints(std::list<point_type> &points);
 	void GetRoadmapSegments(std::vector<segment_type> &segments);
@@ -84,7 +79,4 @@ private:
 	edge_descriptor add_roadmap_edge(vertex_descriptor vertex0, vertex_descriptor vertex1, double weight);
 	vertex_descriptor get_closest_vertex(point_type point);
 	VoronoiPlanner::edge_descriptor get_closest_edge(point_type point);
-
-	ros::NodeHandle ros_node;
-	ros::Publisher marker_pub;
 };

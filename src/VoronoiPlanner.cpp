@@ -12,15 +12,6 @@
 
 #include <unordered_map>
 
-VoronoiPlanner::VoronoiPlanner()
-{
-	marker_pub = ros_node.advertise<visualization_msgs::Marker>("visualization_marker", 10);
-}
-
-VoronoiPlanner::~VoronoiPlanner()
-{
-}
-
 const std::vector<point_type> &VoronoiPlanner::GetPlan(const point_type &car_location, point_type milestone, const std::vector<segment_type> &Walls, float allowed_obs_dist)
 {
 	MakeRoadmap(car_location, Walls, allowed_obs_dist);

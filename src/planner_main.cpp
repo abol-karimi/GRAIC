@@ -14,7 +14,6 @@ public:
     {
         planner_sub = ros_node.subscribe<voronoi::VoronoiPlannerInput>("voronoi_input", 1, &ManageROS::OnVoronoiInput, this);
         planner_pub = ros_node.advertise<voronoi::VoronoiPlannerOutput>("voronoi_output", 1);
-        marker_pub = ros_node.advertise<visualization_msgs::Marker>("visualization_marker", 10);
     }
 
     void OnVoronoiInput(const voronoi::VoronoiPlannerInput::ConstPtr &msg)
@@ -68,7 +67,6 @@ private:
     ros::NodeHandle ros_node;
     ros::Subscriber planner_sub;
     ros::Publisher planner_pub;
-    ros::Publisher marker_pub;
 };
 
 namespace
@@ -79,7 +77,7 @@ namespace
 
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "voronoi_controller");
+    ros::init(argc, argv, "voronoi_planner");
     ManageROS manageROS;
 
     // Capture Ctr+C to stop the car.
