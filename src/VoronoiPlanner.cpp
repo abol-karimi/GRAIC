@@ -21,11 +21,9 @@ VoronoiPlanner::~VoronoiPlanner()
 {
 }
 
-const std::vector<point_type> &VoronoiPlanner::GetPlan(const point_type &car_location, point_type milestone, const std::vector<segment_type> &Walls, float allowed_obs_dist, bool draw_roadmap)
+const std::vector<point_type> &VoronoiPlanner::GetPlan(const point_type &car_location, point_type milestone, const std::vector<segment_type> &Walls, float allowed_obs_dist)
 {
 	MakeRoadmap(car_location, Walls, allowed_obs_dist);
-	if (draw_roadmap)
-		DrawRoadmap();
 
 	// shortest paths from source
 	std::vector<vertex_descriptor> pred(num_vertices(Roadmap));
@@ -357,37 +355,4 @@ bool VoronoiPlanner::get_trackopening(point_type &OutTrackOpening, const std::ve
 	{
 		return false;
 	}
-}
-
-void VoronoiPlanner::DrawRoadmap()
-{
-	std::vector<segment_type> segments;
-	GetRoadmapSegments(segments);
-
-	visualization_msgs::Marker line_list;
-	line_list.header.frame_id = "/laser";
-	line_list.header.stamp = ros::Time::now();
-	line_list.ns = "points_and_lines";
-	line_list.action = visualization_msgs::Marker::ADD;
-	line_list.pose.orientation.w = 1.0;
-	line_list.id = 1;
-	line_list.type = visualization_msgs::Marker::LINE_LIST;
-	// Line width
-	line_list.scale.x = 0.3;
-	// Roadplan is black
-	line_list.color.a = 1.0;
-
-	for (const segment_type &segment : segments)
-	{
-		geometry_msgs::Point p0, p1;
-		p0.x = segment.low().x();
-		p0.y = segment.low().y();
-		p0.z = 0.f;
-		p1.x = segment.high().x();
-		p1.y = segment.high().y();
-		p1.z = 0.f;
-		line_list.points.push_back(p0);
-		line_list.points.push_back(p1);
-	}
-	marker_pub.publish(line_list);
 }
