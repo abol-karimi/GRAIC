@@ -121,7 +121,9 @@ class VehicleDecision():
         self.lookahead = 5.0  # meters
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
         self.allowed_obs_dist = self.wheelbase
-        self.speed = 15
+        self.max_speed = 25
+        self.min_speed = 5
+        self.speed_coeff = 0.1  # to tune the speed controller
 
         self.plan = None
         self.reachEnd = False
@@ -306,6 +308,27 @@ class VehicleDecision():
 
         self.voronoiPub.publish(data)
 
+    def get_speed(self, plan_full):
+        plan = [plan_full[0]]
+        for p in plan_full:
+            if p.distance(plan[-1]) < 0.01:
+                continue
+            plan.append(p)
+
+        curvature_sum = 0
+        for i in range(len(plan)-2):
+            v0 = plan[i+1] - plan[i]
+            v1 = plan[i+2] - plan[i+1]
+            v0_n = math.sqrt(v0.x**2 + v0.y**2)
+            v1_n = math.sqrt(v1.x**2 + v1.y**2)
+            inner = v0.x*v1.x + v0.y*v1.y
+            curvature_sum += math.acos(abs(inner)/(v0_n*v1_n))/v0_n
+        m = self.min_speed
+        M = self.max_speed
+        k = self.speed_coeff
+        speed = 1/(k*curvature_sum + 1/(M-m)) + m
+        return speed
+
     def get_ref_state(self, currentState, obstacleList):
         """
             Get the reference state for the vehicle according to the current state and result from perception module
@@ -361,8 +384,12 @@ class VehicleDecision():
             target_in_rearAxle = carla.Location(x1+t*dx, y1+t*dy, 0)
             target = self.rearAxle_to_map(currentState, target_in_rearAxle)
 
+        speed = self.get_speed(self.plan)
+        currentSpeed = math.sqrt(currentState[2][0]**2+currentState[2][1]**2)
+        print(f'target speed: {speed}, speed: {currentSpeed}')
+
         # The latest target computed by plannerCallback
-        return [target.x, target.y, self.speed]
+        return [target.x, target.y, speed]
 
 
 class VehiclePerception:
