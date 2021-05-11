@@ -123,7 +123,7 @@ class VehicleDecision():
 
         self.lookahead = 5.0  # meters
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
-        self.allowed_obs_dist = 1.5  # meters from Voronoi diagram to obstacles
+        self.allowed_obs_dist = 2  # meters from Voronoi diagram to obstacles
         self.max_speed = 15
         self.min_speed = 5
         self.speed_coeff = 0.1  # to tune the speed controller
@@ -222,7 +222,7 @@ class VehicleDecision():
         return [ps[0]] + [p[1] for p in pccw]
 
     def pubVoronoiObstacles(self, currentState, dynamicObstacles):
-        obstacles = []
+        road_boundaries = []
 
         # If no milestones seen so far
         if not self.milestone:
@@ -270,20 +270,34 @@ class VehicleDecision():
             self.lane_info.lane_markers_center.location[-1])
         ext0 = lane_center_start - lane_center_end
 
-        obstacles += [(road_left+ext0, road_left), (road_left, road_left+ext1),
-                      (road_right+ext0, road_right), (road_right, road_right+ext1)]
+        road_boundaries += [(road_left+ext0, road_left), (road_left, road_left+ext1),
+                            (road_right+ext0, road_right), (road_right, road_right+ext1)]
 
         milestone = road_center+ext1*1.5
 
-        for obs in obstacles:
+        for obs in road_boundaries:
             self.world.debug.draw_line(
                 obs[0], obs[1], thickness=0.5, life_time=0.1)
 
         self.world.debug.draw_line(
             milestone, milestone+carla.Location(0, 0, 5), color=carla.Color(0, 255, 0), life_time=0.1)
 
+        obstacle_boundaries = []
+        for obs in dynamicObstacles:
+            poly = []
+            if len(obs.vertices_locations) == 0:
+                continue
+            for i in range(0, len(obs.vertices_locations), 2):
+                vec = obs.vertices_locations[i].vertex_location
+                poly.append(carla.Location(vec.x, vec.y, 0.0))
+            poly = self.ccw(poly)
+            obstacle_boundaries += [(poly[i-1], poly[i])
+                                    for i in range(len(poly))]
+
         front = self.rearAxle_to_map(
             currentState, carla.Location(self.wheelbase*1.5, 0, 0))
+
+        obstacles = road_boundaries + obstacle_boundaries
 
         # Publish
         data = VoronoiPlannerInput()
@@ -294,19 +308,6 @@ class VehicleDecision():
             start = Vector3(obs[0].x, obs[0].y, 0.0)
             end = Vector3(obs[1].x, obs[1].y, 0.0)
             data.obstacles.append(LineSegment(start, end))
-
-        for obs in dynamicObstacles:
-            poly = []
-            if len(obs.vertices_locations) == 0:
-                continue
-            for i in range(0, len(obs.vertices_locations), 2):
-                vec = obs.vertices_locations[i].vertex_location
-                poly.append(carla.Location(vec.x, vec.y, 0.0))
-            poly = self.ccw(poly)
-            for i in range(len(poly)):
-                start = Vector3(poly[i-1].x, poly[i-1].y, 0.0)
-                end = Vector3(poly[i].x, poly[i].y, 0.0)
-                data.obstacles.append(LineSegment(start, end))
 
         self.voronoiPub.publish(data)
 
