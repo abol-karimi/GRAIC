@@ -97,8 +97,11 @@ class VehicleController():
         # print(f'steer_rad: {steer_rad:8}, target_v: {target_v: 8}')
 
         newAckermannCmd = AckermannDrive()
+        newAckermannCmd.acceleration = 0  # Change speed as quickly as possible
         newAckermannCmd.speed = targetState[2]
         newAckermannCmd.steering_angle = steer_rad
+        # Change angle as quickly as possible:
+        newAckermannCmd.steering_angle_velocity = 0
         self.controlPub.publish(newAckermannCmd)
 
 
@@ -120,8 +123,8 @@ class VehicleDecision():
 
         self.lookahead = 5.0  # meters
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
-        self.allowed_obs_dist = self.wheelbase
-        self.max_speed = 25
+        self.allowed_obs_dist = 1.5  # meters from Voronoi diagram to obstacles
+        self.max_speed = 15
         self.min_speed = 5
         self.speed_coeff = 0.1  # to tune the speed controller
 
@@ -164,10 +167,10 @@ class VehicleDecision():
 
         for loc0, loc1 in self.roadmap:
             self.world.debug.draw_line(
-                loc0+h0, loc1+h0, color=carla.Color(100, 100, 100), life_time=0.1)
+                loc0+h0, loc1+h0, thickness=0.4, color=carla.Color(100, 100, 100), life_time=0.1)
         for i in range(len(self.plan)-1):
             self.world.debug.draw_line(
-                self.plan[i]+h1, self.plan[i+1]+h1, color=carla.Color(i*10, 0, 0), life_time=0.1)
+                self.plan[i]+h1, self.plan[i+1]+h1, thickness=0.5, color=carla.Color(i*10, 0, 0), life_time=0.1)
 
     def rearAxle_to_map(self, currentState, loc):
         currentEuler = currentState[1]
@@ -279,9 +282,8 @@ class VehicleDecision():
         self.world.debug.draw_line(
             milestone, milestone+carla.Location(0, 0, 5), color=carla.Color(0, 255, 0), life_time=0.1)
 
-        car_dir = carla.Rotation(0, np.degrees(
-            currentState[1][2]), 0).get_forward_vector()
-        front = car_loc + car_dir*self.wheelbase
+        front = self.rearAxle_to_map(
+            currentState, carla.Location(self.wheelbase*1.5, 0, 0))
 
         # Publish
         data = VoronoiPlannerInput()
@@ -362,12 +364,12 @@ class VehicleDecision():
             p_in = self.map_to_rearAxle(currentState, self.plan[i-1])
             p_out = self.map_to_rearAxle(currentState, self.plan[i])
 
-            p_in_map = self.rearAxle_to_map(currentState, p_in)
-            p_out_map = self.rearAxle_to_map(currentState, p_out)
-            self.world.debug.draw_line(
-                p_in_map, p_in_map+carla.Location(0, 0, 2), life_time=0.1)
-            self.world.debug.draw_line(
-                p_out_map, p_out_map+carla.Location(0, 0, 2), color=carla.Color(255, 255, 0), life_time=0.1)
+            # p_in_map = self.rearAxle_to_map(currentState, p_in)
+            # p_out_map = self.rearAxle_to_map(currentState, p_out)
+            # self.world.debug.draw_line(
+            #     p_in_map, p_in_map+carla.Location(0, 0, 2), life_time=0.1)
+            # self.world.debug.draw_line(
+            #     p_out_map, p_out_map+carla.Location(0, 0, 2), color=carla.Color(255, 255, 0), life_time=0.1)
 
             # Intercept the lookahead circle with the plan segment (p_in, p_out)
             x1 = p_in.x
@@ -386,7 +388,7 @@ class VehicleDecision():
 
         speed = self.get_speed(self.plan)
         currentSpeed = math.sqrt(currentState[2][0]**2+currentState[2][1]**2)
-        print(f'target speed: {speed}, speed: {currentSpeed}')
+        print(f'speed: {currentSpeed:.2f}, target speed: {speed:.2f}')
 
         # The latest target computed by plannerCallback
         return [target.x, target.y, speed]

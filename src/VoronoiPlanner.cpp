@@ -36,59 +36,6 @@ const std::vector<point_type> &VoronoiPlanner::GetPlan(const point_type &car_loc
 	return Plan;
 }
 
-// Assumes that the Voronoi diagram has only input segments, i.e. no input points.
-point_type VoronoiPlanner::retrieve_endpoint(const cell_type &cell, const std::vector<segment_type> &Walls)
-{
-	source_index_type index = cell.source_index();
-	source_category_type category = cell.source_category();
-	if (category == boost::polygon::SOURCE_CATEGORY_SEGMENT_START_POINT)
-	{
-		return low(Walls[index]);
-	}
-	else
-	{
-		return high(Walls[index]);
-	}
-}
-
-// Assumes that the Voronoi diagram has only input segments, i.e. no input points.
-segment_type VoronoiPlanner::retrieve_segment(const cell_type &cell, const std::vector<segment_type> &Walls)
-{
-	source_index_type index = cell.source_index();
-	return Walls[index];
-}
-
-void VoronoiPlanner::sample_curved_edge(const edge_type &edge, std::vector<point_type> *sampled_edge, const std::vector<segment_type> &Walls)
-{
-	point_type point = edge.cell()->contains_point() ? retrieve_endpoint(*edge.cell(), Walls) : retrieve_endpoint(*edge.twin()->cell(), Walls);
-	segment_type segment = edge.cell()->contains_point() ? retrieve_segment(*edge.twin()->cell(), Walls) : retrieve_segment(*edge.cell(), Walls);
-	boost::polygon::voronoi_visual_utils<coordinate_type>::discretize(point, segment, max_discretization_error * 1000.f, sampled_edge);
-}
-
-void VoronoiPlanner::color_close_vertices(const VD &vd, const std::vector<segment_type> &Walls)
-{
-	for (const auto &vertex : vd.vertices())
-		vertex.color(0);
-
-	for (const auto &vertex : vd.vertices())
-	{
-		point_type voronoi_point(vertex.x(), vertex.y());
-		const cell_type *cell = vertex.incident_edge()->cell();
-		if (cell->contains_point())
-		{
-			point_type endpoint = retrieve_endpoint(*cell, Walls);
-			if (euclidean_distance(endpoint, voronoi_point) < allowed_obs_dist * 1000.f) // *1000.f to convert to milimeters
-				vertex.color(1);
-		}
-		else
-		{ // i.e. cell contains a segment
-			segment_type segment = retrieve_segment(*cell, Walls);
-			if (euclidean_distance(segment, voronoi_point) < allowed_obs_dist * 1000.f)
-				vertex.color(1);
-		}
-	}
-}
-
 void VoronoiPlanner::MakeRoadmap(const point_type &car_location, const std::vector<segment_type> &Walls, float allowed_obs_dist)
 {
 	this->allowed_obs_dist = allowed_obs_dist;
@@ -97,7 +44,7 @@ void VoronoiPlanner::MakeRoadmap(const point_type &car_location, const std::vect
 	std::vector<int> component(Walls.size(), 0);
 	for (size_t i = 1; i < Walls.size(); ++i)
 	{
-		if (boost::polygon::euclidean_distance(Walls[i - 1].high(), Walls[i].low()) < 0.001)
+		if (euclidean_distance(Walls[i - 1].high(), Walls[i].low()) < 0.001)
 		{
 			component[i] = component[i - 1];
 		}
@@ -154,6 +101,59 @@ void VoronoiPlanner::MakeRoadmap(const point_type &car_location, const std::vect
 	}
 	add_start_vertex(car_location);
 	add_finish_vertex();
+}
+
+// Assumes that the Voronoi diagram has only input segments, i.e. no input points.
+point_type VoronoiPlanner::retrieve_endpoint(const cell_type &cell, const std::vector<segment_type> &Walls)
+{
+	source_index_type index = cell.source_index();
+	source_category_type category = cell.source_category();
+	if (category == boost::polygon::SOURCE_CATEGORY_SEGMENT_START_POINT)
+	{
+		return low(Walls[index]);
+	}
+	else
+	{
+		return high(Walls[index]);
+	}
+}
+
+// Assumes that the Voronoi diagram has only input segments, i.e. no input points.
+segment_type VoronoiPlanner::retrieve_segment(const cell_type &cell, const std::vector<segment_type> &Walls)
+{
+	source_index_type index = cell.source_index();
+	return Walls[index];
+}
+
+void VoronoiPlanner::sample_curved_edge(const edge_type &edge, std::vector<point_type> *sampled_edge, const std::vector<segment_type> &Walls)
+{
+	point_type point = edge.cell()->contains_point() ? retrieve_endpoint(*edge.cell(), Walls) : retrieve_endpoint(*edge.twin()->cell(), Walls);
+	segment_type segment = edge.cell()->contains_point() ? retrieve_segment(*edge.twin()->cell(), Walls) : retrieve_segment(*edge.cell(), Walls);
+	boost::polygon::voronoi_visual_utils<coordinate_type>::discretize(point, segment, max_discretization_error * 1000.f, sampled_edge);
+}
+
+void VoronoiPlanner::color_close_vertices(const VD &vd, const std::vector<segment_type> &Walls)
+{
+	for (const auto &vertex : vd.vertices())
+		vertex.color(0);
+
+	for (const auto &vertex : vd.vertices())
+	{
+		point_type voronoi_point(vertex.x(), vertex.y());
+		const cell_type *cell = vertex.incident_edge()->cell();
+		if (cell->contains_point())
+		{
+			point_type endpoint = retrieve_endpoint(*cell, Walls);
+			if (euclidean_distance(endpoint, voronoi_point) < allowed_obs_dist * 1000.f) // *1000.f to convert to millimeters
+				vertex.color(1);
+		}
+		else
+		{ // i.e. cell contains a segment
+			segment_type segment = retrieve_segment(*cell, Walls);
+			if (euclidean_distance(segment, voronoi_point) < allowed_obs_dist * 1000.f)
+				vertex.color(1);
+		}
+	}
 }
 
 VoronoiPlanner::vertex_descriptor VoronoiPlanner::add_roadmap_vertex(point_type point)
@@ -216,7 +216,7 @@ void VoronoiPlanner::add_curved_edge(const edge_type &edge, std::unordered_map<c
 		vertices[i] = add_roadmap_vertex(boost::polygon::scale_down(samples[i], 1000));
 	// Add all the edges of the discretization
 	for (std::size_t i = 0; i < samples.size() - 1; ++i)
-		add_roadmap_edge(vertices[i], vertices[i + 1], boost::polygon::euclidean_distance(samples[i], samples[i + 1]) / 1000.f);
+		add_roadmap_edge(vertices[i], vertices[i + 1], euclidean_distance(samples[i], samples[i + 1]) / 1000.f);
 }
 
 void VoronoiPlanner::add_start_vertex(const point_type &car_location)
@@ -283,7 +283,7 @@ VoronoiPlanner::vertex_descriptor VoronoiPlanner::get_closest_vertex(point_type 
 	for (tie(vi, vi_end) = vertices(Roadmap); vi != vi_end; ++vi)
 	{
 		point_type current_point = get(coordinates_map, *vi);
-		double current_distance = polygon::euclidean_distance(point, current_point);
+		double current_distance = euclidean_distance(point, current_point);
 		if (current_distance < closest_distance)
 		{
 			current_vertex = *vi;
@@ -314,36 +314,4 @@ VoronoiPlanner::edge_descriptor VoronoiPlanner::get_closest_edge(point_type poin
 		}
 	}
 	return e_closest;
-}
-
-bool VoronoiPlanner::get_trackopening(point_type &OutTrackOpening, const std::vector<segment_type> &Walls, double min_gap)
-{
-	std::vector<point_type> discontinuities;
-	double max_cos = -1;		// The angle behind the car has cos=-1
-	int max_cos_index = -1; // If there is any gaps, the index will be updated to nonnegative.
-	for (std::size_t i = 0; i + 1 < Walls.size(); ++i)
-	{
-		if (boost::polygon::euclidean_distance(Walls[i].high(), Walls[i + 1].low()) >= min_gap)
-		{
-			point_type endpoint = Walls[i].high();	// TODO: use boost::geometry::centroid
-			convolve(endpoint, Walls[i + 1].low()); // add the seond point to the first
-			point_type midpoint = scale_down(endpoint, 2);
-			discontinuities.push_back(midpoint);
-			double cos = midpoint.x() / euclidean_distance(midpoint, point_type(0, 0));
-			if (cos > max_cos)
-			{
-				max_cos_index = discontinuities.size() - 1; // current discontinuity is closest to front of the car
-				max_cos = cos;
-			}
-		}
-	}
-	if (discontinuities.size() > 0)
-	{
-		OutTrackOpening = discontinuities[max_cos_index];
-		return true;
-	}
-	else
-	{
-		return false;
-	}
 }

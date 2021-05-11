@@ -69,11 +69,11 @@ private:
     ros::Publisher planner_pub;
 };
 
-namespace
-{
-    std::function<void(int)> shutdown_handler;
-    void signal_handler(int signal) { shutdown_handler(signal); }
-} // namespace
+// namespace
+// {
+//     std::function<void(int)> shutdown_handler;
+//     void signal_handler(int signal) { shutdown_handler(signal); }
+// } // namespace
 
 int main(int argc, char **argv)
 {
@@ -81,12 +81,11 @@ int main(int argc, char **argv)
     ManageROS manageROS;
 
     // Capture Ctr+C to stop the car.
-    signal(SIGINT, signal_handler);
-    shutdown_handler = [](int sig) {
-        usleep(1000);
-        ros::shutdown();
-        return EXIT_SUCCESS;
-    };
+    // signal(SIGINT, signal_handler);
+    // shutdown_handler = [](int sig) {
+    //     ros::shutdown();
+    //     return EXIT_SUCCESS;
+    // };
 
     ros::spin();
 

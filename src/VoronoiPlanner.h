@@ -32,9 +32,8 @@ public:
 	void GetRoadmapSegments(std::vector<segment_type> &segments);
 
 	std::vector<point_type> Plan;
-	double allowed_obs_dist; // in meters
+	float allowed_obs_dist = 1.0; // in meters
 	const double max_discretization_error = 0.3;
-	const double min_track_width = 1.5f;
 
 private:
 	void MakeRoadmap(const point_type &car_location, const std::vector<segment_type> &Walls, float allowed_obs_dist);
@@ -63,7 +62,6 @@ private:
 
 	Roadmap_t Roadmap;
 	vertex_descriptor start_vertex;
-	bool get_trackopening(point_type &OutTrackOpening, const std::vector<segment_type> &Walls, double min_gap);
 	void add_start_vertex(const point_type &car_location);
 	void add_finish_vertex();
 
