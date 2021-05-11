@@ -284,6 +284,9 @@ class VehicleDecision():
 
         obstacle_boundaries = []
         for obs in obstacles:
+            loc = self.map_to_rearAxle(currentState, V3_to_Loc(obs.location))
+            if (loc.x < -2.0):
+                continue  # ignore passed obstacles
             poly = []
             if len(obs.vertices_locations) == 0:
                 continue
