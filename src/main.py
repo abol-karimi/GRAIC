@@ -221,7 +221,7 @@ class VehicleDecision():
         pccw.sort(key=lambda pair: pair[0])
         return [ps[0]] + [p[1] for p in pccw]
 
-    def pubVoronoiObstacles(self, currentState, dynamicObstacles):
+    def pubPlannerInput(self, currentState, obstacles):
         road_boundaries = []
 
         # If no milestones seen so far
@@ -283,7 +283,7 @@ class VehicleDecision():
             milestone, milestone+carla.Location(0, 0, 5), color=carla.Color(0, 255, 0), life_time=0.1)
 
         obstacle_boundaries = []
-        for obs in dynamicObstacles:
+        for obs in obstacles:
             poly = []
             if len(obs.vertices_locations) == 0:
                 continue
@@ -297,16 +297,16 @@ class VehicleDecision():
         front = self.rearAxle_to_map(
             currentState, carla.Location(self.wheelbase*1.5, 0, 0))
 
-        obstacles = road_boundaries + obstacle_boundaries
+        boundaries = road_boundaries + obstacle_boundaries
 
         # Publish
         data = VoronoiPlannerInput()
         data.allowed_obs_dist = self.allowed_obs_dist
         data.car_location = Vector3(front.x, front.y, 0.0)
         data.milestone = Vector3(milestone.x, milestone.y, 0.0)
-        for obs in obstacles:
-            start = Vector3(obs[0].x, obs[0].y, 0.0)
-            end = Vector3(obs[1].x, obs[1].y, 0.0)
+        for segment in boundaries:
+            start = Vector3(segment[0].x, segment[0].y, 0.0)
+            end = Vector3(segment[1].x, segment[1].y, 0.0)
             data.obstacles.append(LineSegment(start, end))
 
         self.voronoiPub.publish(data)
@@ -344,7 +344,7 @@ class VehicleDecision():
             return None
 
         # Publish obstacles for VoronoiPlanner
-        self.pubVoronoiObstacles(currentState, obstacleList)
+        self.pubPlannerInput(currentState, obstacleList)
 
         if not self.plan:
             print('No plans received yet.')
