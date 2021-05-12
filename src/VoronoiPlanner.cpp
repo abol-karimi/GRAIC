@@ -12,10 +12,12 @@
 
 #include <unordered_map>
 
-const std::vector<point_type> &VoronoiPlanner::GetPlan(const point_type &car_location, point_type milestone, const std::vector<segment_type> &Walls, float allowed_obs_dist)
+const std::vector<point_type> &VoronoiPlanner::GetPlan(const point_type &car_location, point_type milestone, const std::vector<segment_type> &Walls, double allowed_obs_dist)
 {
 	MakeRoadmap(car_location, Walls, allowed_obs_dist);
+	std::cout << "Roadmap. " << std::flush;
 
+	Plan.clear();
 	// shortest paths from source
 	std::vector<vertex_descriptor> pred(num_vertices(Roadmap));
 	std::vector<double> distances(num_vertices(Roadmap));
@@ -36,7 +38,7 @@ const std::vector<point_type> &VoronoiPlanner::GetPlan(const point_type &car_loc
 	return Plan;
 }
 
-void VoronoiPlanner::MakeRoadmap(const point_type &car_location, const std::vector<segment_type> &Walls, float allowed_obs_dist)
+void VoronoiPlanner::MakeRoadmap(const point_type &car_location, const std::vector<segment_type> &Walls, double allowed_obs_dist)
 {
 	this->allowed_obs_dist = allowed_obs_dist;
 
@@ -66,13 +68,16 @@ void VoronoiPlanner::MakeRoadmap(const point_type &car_location, const std::vect
 	}
 	VD VDiagram;
 	construct_voronoi(Walls_mm.begin(), Walls_mm.end(), &VDiagram);
+	std::cout << "Voronoi. " << std::flush;
 
 	// Maintain a mapping from Voronoi vertices to roadmap vertices
 	std::unordered_map<const vertex_type *, vertex_descriptor> voronoi_to_roadmap;
 
-	// Color too-close (to the walls) Voronoi vertices,
-	// then add the colorless to the roadmap.
+	// Color too-close (to the walls) Voronoi vertices.
 	color_close_vertices(VDiagram, Walls_mm);
+	std::cout << "Color. " << std::flush;
+
+	// Add the colorless vertices to the roadmap.
 	for (const_vertex_iterator it = VDiagram.vertices().begin(); it != VDiagram.vertices().end(); ++it)
 	{
 		// If vertex is too close to the walls, skip.
@@ -81,6 +86,7 @@ void VoronoiPlanner::MakeRoadmap(const point_type &car_location, const std::vect
 		vertex_descriptor newvertex = add_roadmap_vertex(point_type(it->x() / 1000.f, it->y() / 1000.f)); // The coordinates are in millimeters in VDiagram, but in meters in the roadmap.
 		voronoi_to_roadmap.insert({&(*it), newvertex});
 	}
+	std::cout << "Vertices. " << std::flush;
 
 	for (const auto &edge : VDiagram.edges())
 	{
@@ -99,6 +105,8 @@ void VoronoiPlanner::MakeRoadmap(const point_type &car_location, const std::vect
 				add_curved_edge(edge, voronoi_to_roadmap, Walls_mm);
 		}
 	}
+	std::cout << "Edges. " << std::flush;
+
 	add_start_vertex(car_location);
 	add_finish_vertex();
 }
@@ -216,7 +224,12 @@ void VoronoiPlanner::add_curved_edge(const edge_type &edge, std::unordered_map<c
 		vertices[i] = add_roadmap_vertex(boost::polygon::scale_down(samples[i], 1000));
 	// Add all the edges of the discretization
 	for (std::size_t i = 0; i < samples.size() - 1; ++i)
-		add_roadmap_edge(vertices[i], vertices[i + 1], euclidean_distance(samples[i], samples[i + 1]) / 1000.f);
+	{
+		auto si = boost::polygon::scale_down(samples[i], 1000);
+		auto sii = boost::polygon::scale_down(samples[i + 1], 1000);
+		double weight = euclidean_distance(si, sii);
+		add_roadmap_edge(vertices[i], vertices[i + 1], weight);
+	}
 }
 
 void VoronoiPlanner::add_start_vertex(const point_type &car_location)
@@ -261,6 +274,7 @@ void VoronoiPlanner::GetRoadmapPoints(std::list<point_type> &points) // TODO: Ch
 void VoronoiPlanner::GetRoadmapSegments(std::vector<segment_type> &segments) // TODO: Change to vector and reserve space
 {
 	using namespace boost;
+	weight_map_t weight_map = get(boost::edge_weight, Roadmap);
 	coordinates_map_t coordinates_map = get(vertex_coordinates, Roadmap);
 	graph_traits<Roadmap_t>::edge_iterator ei, ei_end;
 	for (tie(ei, ei_end) = edges(Roadmap); ei != ei_end; ++ei)
@@ -269,6 +283,13 @@ void VoronoiPlanner::GetRoadmapSegments(std::vector<segment_type> &segments) // 
 		vertex_descriptor vertex1 = target(*ei, Roadmap);
 		point_type point0 = get(coordinates_map, vertex0);
 		point_type point1 = get(coordinates_map, vertex1);
+		double diff = abs(euclidean_distance(point0, point1) - weight_map[*ei]);
+		if (diff > 0.001)
+		{
+			std::cout << "Dist: " << euclidean_distance(point0, point1) << ", Weight: " << weight_map[*ei]
+								<< " (" << point0.x() << "," << point0.y() << "), (" << point1.x() << "," << point1.y() << ")" << std::endl
+								<< std::flush;
+		}
 		segments.push_back(segment_type(point0, point1));
 	}
 }

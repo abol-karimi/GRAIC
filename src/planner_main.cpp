@@ -18,6 +18,7 @@ public:
 
     void OnVoronoiInput(const voronoi::VoronoiPlannerInput::ConstPtr &msg)
     {
+        std::cout << "Input. " << std::flush;
         // Convert VoronoiPlannerInput
         point_type car_location(msg->car_location.x, msg->car_location.y);
         point_type milestone(msg->milestone.x, msg->milestone.y);
@@ -31,13 +32,16 @@ public:
             obstacles.push_back(segment_type(start, end));
         }
 
-        VoronoiPlanner planner;
         const std::vector<point_type> &plan = planner.GetPlan(car_location, milestone, obstacles, allowed_obs_dist);
+        std::cout << "Plan. " << std::flush;
 
         std::vector<segment_type> roadmap;
         planner.GetRoadmapSegments(roadmap);
 
         Publish(plan, roadmap);
+
+        std::cout << "Published." << std::endl
+                  << std::flush;
     }
 
     void Publish(const std::vector<point_type> &plan, std::vector<segment_type> &roadmap) const
@@ -56,14 +60,18 @@ public:
             voronoi::LineSegment outSegment;
             outSegment.start.x = segment.low().x();
             outSegment.start.y = segment.low().y();
+            outSegment.start.z = 0.0;
             outSegment.end.x = segment.high().x();
             outSegment.end.y = segment.high().y();
+            outSegment.end.z = 0.0;
             output.roadmap.push_back(outSegment);
         }
         planner_pub.publish(output);
     }
 
 private:
+    VoronoiPlanner planner;
+
     ros::NodeHandle ros_node;
     ros::Subscriber planner_sub;
     ros::Publisher planner_pub;

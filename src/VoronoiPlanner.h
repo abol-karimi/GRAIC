@@ -27,16 +27,16 @@ namespace boost
 class VoronoiPlanner
 {
 public:
-	const std::vector<point_type> &GetPlan(const point_type &car_location, point_type milestone, const std::vector<segment_type> &Walls, float allowed_obs_dist);
+	const std::vector<point_type> &GetPlan(const point_type &car_location, point_type milestone, const std::vector<segment_type> &Walls, double allowed_obs_dist);
 	void GetRoadmapPoints(std::list<point_type> &points);
 	void GetRoadmapSegments(std::vector<segment_type> &segments);
 
 	std::vector<point_type> Plan;
-	float allowed_obs_dist = 1.0; // in meters
-	const double max_discretization_error = 0.3;
+	double allowed_obs_dist = 1.0; // in meters
+	const double max_discretization_error = 0.1;
 
 private:
-	void MakeRoadmap(const point_type &car_location, const std::vector<segment_type> &Walls, float allowed_obs_dist);
+	void MakeRoadmap(const point_type &car_location, const std::vector<segment_type> &Walls, double allowed_obs_dist);
 
 	typedef boost::polygon::voronoi_diagram<coordinate_type> VD;
 	typedef VD::cell_type cell_type;
@@ -53,7 +53,7 @@ private:
 
 	typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS,
 																boost::property<boost::vertex_coordinates_t, point_type>,
-																boost::property<boost::edge_weight_t, float>>
+																boost::property<boost::edge_weight_t, double>>
 			Roadmap_t;
 	typedef typename boost::graph_traits<VoronoiPlanner::Roadmap_t>::vertex_descriptor vertex_descriptor;
 	typedef typename boost::graph_traits<VoronoiPlanner::Roadmap_t>::edge_descriptor edge_descriptor;

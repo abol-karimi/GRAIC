@@ -16,6 +16,10 @@ import carla
 import math
 
 
+def Loc_to_V3(l):
+    return Vector3(l.x, l.y, l.z)
+
+
 def V3_to_Loc(v):
     # Vector3 to carla.Location
     return carla.Location(v.x, v.y, v.z)
@@ -128,7 +132,7 @@ class VehicleDecision():
 
         self.lookahead = 5.0  # meters
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
-        self.allowed_obs_dist = 2  # meters from Voronoi diagram to obstacles
+        self.allowed_obs_dist = 1.5  # meters from Voronoi diagram to obstacles
         self.max_speed = 20
         self.min_speed = 5
         self.speed_coeff = 0.1  # to tune the speed controller
@@ -161,9 +165,12 @@ class VehicleDecision():
         print(f'Planner set wheelbase to {self.wheelbase} meters.')
 
     def planCallback(self, data):
-        self.plan = [carla.Location(v.x, v.y, 0) for v in data.plan]
-        self.roadmap = [(carla.Location(seg.start.x, seg.start.y, 0),
-                         carla.Location(seg.end.x, seg.end.y, 0)) for seg in data.roadmap]
+        self.plan = [self.rearAxle_to_map(
+            self.currentState, V3_to_Loc(v)) for v in data.plan]
+
+        self.roadmap = [(self.rearAxle_to_map(self.currentState, V3_to_Loc(seg.start)),
+                         self.rearAxle_to_map(self.currentState, V3_to_Loc(seg.end)))
+                        for seg in data.roadmap]
 
         h0 = carla.Location(
             0, 0, self.lane_info.lane_markers_center.location[-1].z + 0.5)
@@ -172,10 +179,10 @@ class VehicleDecision():
 
         for loc0, loc1 in self.roadmap:
             self.world.debug.draw_line(
-                loc0+h0, loc1+h0, thickness=0.4, color=carla.Color(200, 200, 200), life_time=0.1)
+                loc0+h0, loc1+h0, thickness=0.1, color=carla.Color(255, 255, 255), life_time=0.1)
         for i in range(len(self.plan)-1):
             self.world.debug.draw_line(
-                self.plan[i]+h1, self.plan[i+1]+h1, thickness=0.5, color=carla.Color(i*4, 0, 0), life_time=0.1)
+                self.plan[i]+h1, self.plan[i+1]+h1, thickness=0.2, color=carla.Color(i*4, 0, 0), life_time=0.1)
 
     def rearAxle_to_map(self, currentState, loc):
         currentEuler = currentState[1]
@@ -321,11 +328,15 @@ class VehicleDecision():
         # Publish
         data = VoronoiPlannerInput()
         data.allowed_obs_dist = self.allowed_obs_dist
-        data.car_location = Vector3(front.x, front.y, 0.0)
-        data.milestone = Vector3(milestone.x, milestone.y, 0.0)
+        data.car_location = Loc_to_V3(
+            self.map_to_rearAxle(currentState, front))
+        data.milestone = Loc_to_V3(
+            self.map_to_rearAxle(currentState, milestone))
         for segment in boundaries:
-            start = Vector3(segment[0].x, segment[0].y, 0.0)
-            end = Vector3(segment[1].x, segment[1].y, 0.0)
+            s0 = self.map_to_rearAxle(currentState, segment[0])
+            s1 = self.map_to_rearAxle(currentState, segment[1])
+            start = Vector3(s0.x, s0.y, 0.0)
+            end = Vector3(s1.x, s1.y, 0.0)
             data.obstacles.append(LineSegment(start, end))
 
         self.voronoiPub.publish(data)
@@ -363,6 +374,8 @@ class VehicleDecision():
         """
         if self.reachEnd:
             return None
+
+        self.currentState = currentState
 
         # Publish obstacles for VoronoiPlanner
         self.pubPlannerInput(currentState, obstacleList)
