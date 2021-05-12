@@ -21,6 +21,11 @@ def V3_to_Loc(v):
     return carla.Location(v.x, v.y, v.z)
 
 
+def V3_to_Rot(v):
+    # Vector3 to carla.Rotation
+    return carla.Rotation(v.x, v.y, v.z)
+
+
 class VehicleController():
 
     def __init__(self, role_name='ego_vehicle'):
@@ -167,10 +172,10 @@ class VehicleDecision():
 
         for loc0, loc1 in self.roadmap:
             self.world.debug.draw_line(
-                loc0+h0, loc1+h0, thickness=0.4, color=carla.Color(100, 100, 100), life_time=0.1)
+                loc0+h0, loc1+h0, thickness=0.4, color=carla.Color(200, 200, 200), life_time=0.1)
         for i in range(len(self.plan)-1):
             self.world.debug.draw_line(
-                self.plan[i]+h1, self.plan[i+1]+h1, thickness=0.5, color=carla.Color(i*10, 0, 0), life_time=0.1)
+                self.plan[i]+h1, self.plan[i+1]+h1, thickness=0.5, color=carla.Color(i*4, 0, 0), life_time=0.1)
 
     def rearAxle_to_map(self, currentState, loc):
         currentEuler = currentState[1]
@@ -232,24 +237,37 @@ class VehicleDecision():
             print('No lane info yet!')
             return
 
-        lane_right = V3_to_Loc(self.lane_info.lane_markers_right.location[-1])
-        lane_left = V3_to_Loc(self.lane_info.lane_markers_left.location[-1])
+        right_border, left_border = [], []
+        right_waypoints = self.lane_info.lane_markers_right
+        center_waypoints = self.lane_info.lane_markers_center
+        left_waypoints = self.lane_info.lane_markers_left
+        for i, (loc, rot, center) in enumerate(zip(right_waypoints.location, right_waypoints.rotation, center_waypoints.location)):
+            loc, right = V3_to_Loc(loc), V3_to_Rot(rot).get_right_vector()
+            # self.world.debug.draw_arrow(
+            #     loc, loc+right, color=carla.Color(i*10, 0, 0), life_time=0.1)
+            c = V3_to_Loc(center)
+            lane_width = c.distance(loc)*2
+            lane_count = abs(self.lane_info.RIGHT_LANE -
+                             self.lane_info.lane_state)
+            if c.distance(loc+right) < c.distance(loc):
+                lane_count += 1
+            border = loc + right*lane_width*lane_count + \
+                right*0.8 + carla.Location(0, 0, 0.2)
+            right_border.append(border)
 
-        # lane_markers_* is w.r.t to opendrive not race direction
-        # so detect whether left and right boundaries are swapped
-        car_loc = carla.Location(currentState[0][0], currentState[0][1], 0)
-        v0 = lane_right-car_loc
-        v1 = lane_left-car_loc
-        if v0.x*v1.y-v0.y*v1.x > 0:
-            lane_right, lane_left = lane_left, lane_right
+        for loc, rot, center in zip(left_waypoints.location, left_waypoints.rotation, center_waypoints.location):
+            loc, left = V3_to_Loc(loc), V3_to_Rot(rot).get_right_vector()*(-1)
+            c = V3_to_Loc(center)
+            lane_width = c.distance(loc)*2
+            lane_count = abs(self.lane_info.LEFT_LANE -
+                             self.lane_info.lane_state)
+            if c.distance(loc+left) < c.distance(loc):
+                lane_count += 1
+            border = loc + left*lane_width*lane_count + \
+                left*0.8 + carla.Location(0, 0, 0.2)
+            left_border.append(border)
 
-        road_right = lane_right + \
-            (lane_right-lane_left) * \
-            abs(self.lane_info.RIGHT_LANE-self.lane_info.lane_state)
-        road_left = lane_left + \
-            (lane_left-lane_right) * \
-            abs(self.lane_info.LEFT_LANE-self.lane_info.lane_state)
-        road_center = road_right*0.5 + road_left*0.5
+        road_center = left_border[-1]*0.5 + right_border[-1]*0.5
 
         # Linear extrapolation after the last boundary,
         # based on the direction from road center to milestone
@@ -263,21 +281,19 @@ class VehicleDecision():
                 0, self.lane_info.lane_markers_center.rotation[-1].y, 0)
             ext1 = lane_center_rot.get_forward_vector()*ext_size
 
-        # Linear interpolation between first and last boundaries
-        lane_center_start = V3_to_Loc(
-            self.lane_info.lane_markers_center.location[0])
-        lane_center_end = V3_to_Loc(
-            self.lane_info.lane_markers_center.location[-1])
-        ext0 = lane_center_start - lane_center_end
+        road_boundaries += [(right_border[i], right_border[i+1])
+                            for i in range(len(right_border)-1)]
+        road_boundaries += [(right_border[-1], right_border[-1]+ext1)]
 
-        road_boundaries += [(road_left+ext0, road_left), (road_left, road_left+ext1),
-                            (road_right+ext0, road_right), (road_right, road_right+ext1)]
+        road_boundaries += [(left_border[i], left_border[i+1])
+                            for i in range(len(left_border)-1)]
+        road_boundaries += [(left_border[-1], left_border[-1]+ext1)]
 
         milestone = road_center+ext1*1.5
 
-        for obs in road_boundaries:
+        for bound in road_boundaries:
             self.world.debug.draw_line(
-                obs[0], obs[1], thickness=0.5, life_time=0.1)
+                bound[0], bound[1], thickness=0.2, life_time=0.1)
 
         self.world.debug.draw_line(
             milestone, milestone+carla.Location(0, 0, 5), color=carla.Color(0, 255, 0), life_time=0.1)
