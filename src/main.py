@@ -132,10 +132,10 @@ class VehicleDecision():
 
         self.lookahead = 5.0  # meters
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
-        self.allowed_obs_dist = 1.5  # meters from Voronoi diagram to obstacles
-        self.max_speed = 20
+        self.allowed_obs_dist = 1.7  # meters from Voronoi diagram to obstacles
+        self.max_speed = 15
         self.min_speed = 5
-        self.speed_coeff = 0.1  # to tune the speed controller
+        self.speed_coeff = 0.3  # to tune the speed controller
 
         self.plan = None
         self.reachEnd = False
@@ -348,7 +348,7 @@ class VehicleDecision():
                 continue
             plan.append(p)
 
-        curvature_sum = 0
+        max_curv = 0.0
         for i in range(len(plan)-2):
             v0 = plan[i+1] - plan[i]
             v1 = plan[i+2] - plan[i+1]
@@ -357,11 +357,12 @@ class VehicleDecision():
             inner = v0.x*v1.x + v0.y*v1.y
             cos = inner/(v0_n*v1_n)
             cos = np.clip(cos, -1, 1)
-            curvature_sum += math.acos(cos)/v0_n
+            max_curv = max(math.acos(cos), max_curv)
+
         m = self.min_speed
         M = self.max_speed
         k = self.speed_coeff
-        speed = 1/(k*curvature_sum + 1/(M-m)) + m
+        speed = 1/(k*max_curv + 1/(M-m)) + m
         return speed
 
     def get_ref_state(self, currentState, obstacleList):
