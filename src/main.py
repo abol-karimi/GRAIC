@@ -129,7 +129,7 @@ class VehicleDecision():
         self.lookahead = 5.0  # meters
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
         self.allowed_obs_dist = 2  # meters from Voronoi diagram to obstacles
-        self.max_speed = 15
+        self.max_speed = 20
         self.min_speed = 5
         self.speed_coeff = 0.1  # to tune the speed controller
 
@@ -344,7 +344,9 @@ class VehicleDecision():
             v0_n = math.sqrt(v0.x**2 + v0.y**2)
             v1_n = math.sqrt(v1.x**2 + v1.y**2)
             inner = v0.x*v1.x + v0.y*v1.y
-            curvature_sum += math.acos(abs(inner)/(v0_n*v1_n))/v0_n
+            cos = inner/(v0_n*v1_n)
+            cos = np.clip(cos, -1, 1)
+            curvature_sum += math.acos(cos)/v0_n
         m = self.min_speed
         M = self.max_speed
         k = self.speed_coeff
