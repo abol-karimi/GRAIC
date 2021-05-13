@@ -41,12 +41,6 @@ class VehicleController():
         self.subVehicleInfo = rospy.Subscriber(
             "/carla/%s/vehicle_info" % role_name, CarlaEgoVehicleInfo, self.vehicleInfoCallback)
 
-        # For debuggin purposes. TODO delete later
-        host = rospy.get_param('~host', 'localhost')
-        port = rospy.get_param('~port', 2000)
-        client = carla.Client(host, port)
-        self.world = client.get_world()
-
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
 
     def vehicleInfoCallback(self, data):
@@ -96,9 +90,6 @@ class VehicleController():
         # transform (xError, yError) to wheelbase coordinates
         xError += self.wheelbase/2.0
 
-        end = car2map.transform(carla.Location(xError, yError, 0))
-        self.world.debug.draw_line(rear_axle, end, life_time=0.1)
-
         # pure-pursuit steering rule
         import math
         d2 = xError**2 + yError**2
@@ -138,7 +129,8 @@ class VehicleDecision():
         self.min_speed = 5
         self.speed_coeff = 0.3  # to tune the speed controller
 
-        self.plan = None
+        self.plan = []
+        self.roadmap = []
         self.reachEnd = False
 
         self.milestone = None
@@ -173,17 +165,19 @@ class VehicleDecision():
                          self.rearAxle_to_map(self.currentState, V3_to_Loc(seg.end)))
                         for seg in data.roadmap]
 
+        # ---- Visualization ----
         h0 = carla.Location(
             0, 0, self.lane_info.lane_markers_center.location[-1].z + 0.5)
         h1 = carla.Location(
             0, 0, self.lane_info.lane_markers_center.location[-1].z + 1.0)
-
+        # Roadmap
         for loc0, loc1 in self.roadmap:
             self.world.debug.draw_line(
                 loc0+h0, loc1+h0, thickness=0.1, color=carla.Color(255, 255, 255), life_time=0.1)
+        # Plan
         for i in range(len(self.plan)-1):
             self.world.debug.draw_line(
-                self.plan[i]+h1, self.plan[i+1]+h1, thickness=0.2, color=carla.Color(i*4, 0, 0), life_time=0.1)
+                self.plan[i]+h1, self.plan[i+1]+h1, thickness=0.2, color=carla.Color(0, i*4, 0), life_time=0.1)
 
     def rearAxle_to_map(self, currentState, loc):
         currentEuler = currentState[1]
@@ -251,8 +245,6 @@ class VehicleDecision():
         left_waypoints = self.lane_info.lane_markers_left
         for i, (loc, rot, center) in enumerate(zip(right_waypoints.location, right_waypoints.rotation, center_waypoints.location)):
             loc, right = V3_to_Loc(loc), V3_to_Rot(rot).get_right_vector()
-            # self.world.debug.draw_arrow(
-            #     loc, loc+right, color=carla.Color(i*10, 0, 0), life_time=0.1)
             c = V3_to_Loc(center)
             lane_width = c.distance(loc)*2
             lane_count = abs(self.lane_info.RIGHT_LANE -
@@ -299,13 +291,6 @@ class VehicleDecision():
 
         milestone = road_center+ext1*1.5
 
-        for bound in road_boundaries:
-            self.world.debug.draw_line(
-                bound[0], bound[1], thickness=0.2, life_time=0.1)
-
-        self.world.debug.draw_line(
-            milestone, milestone+carla.Location(0, 0, 5), color=carla.Color(0, 255, 0), life_time=0.1)
-
         obstacle_boundaries = []
         for obs in obstacles:
             loc = self.map_to_rearAxle(currentState, V3_to_Loc(obs.location))
@@ -341,6 +326,16 @@ class VehicleDecision():
             data.obstacles.append(LineSegment(start, end))
 
         self.voronoiPub.publish(data)
+
+        # ----- Visualization----
+        # Road boundaries
+        for bound in road_boundaries:
+            self.world.debug.draw_line(
+                bound[0], bound[1], thickness=0.2, life_time=0.1)
+
+        # Milestone
+        self.world.debug.draw_line(
+            milestone, milestone+carla.Location(0, 0, 5), color=carla.Color(0, 255, 0), life_time=0.1)
 
     def get_speed(self, plan_full):
         plan = [plan_full[0]]
@@ -383,7 +378,7 @@ class VehicleDecision():
         self.pubPlannerInput(
             currentState, obstacleList if obstacleList != None else [])
 
-        if not self.plan:
+        if len(self.plan) == 0:
             print('No plans received yet.')
             return [0.0, 0.0, 0.0]
 
@@ -401,13 +396,6 @@ class VehicleDecision():
                     break
             p_in = self.map_to_rearAxle(currentState, self.plan[i-1])
             p_out = self.map_to_rearAxle(currentState, self.plan[i])
-
-            # p_in_map = self.rearAxle_to_map(currentState, p_in)
-            # p_out_map = self.rearAxle_to_map(currentState, p_out)
-            # self.world.debug.draw_line(
-            #     p_in_map, p_in_map+carla.Location(0, 0, 2), life_time=0.1)
-            # self.world.debug.draw_line(
-            #     p_out_map, p_out_map+carla.Location(0, 0, 2), color=carla.Color(255, 255, 0), life_time=0.1)
 
             # Intercept the lookahead circle with the plan segment (p_in, p_out)
             x1 = p_in.x
