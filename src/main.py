@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import rospy
 import rospkg
 import numpy as np
@@ -10,7 +11,7 @@ from carla_msgs.msg import CarlaEgoVehicleControl, CarlaEgoVehicleInfo
 from graic_msgs.msg import LaneList
 from graic_msgs.msg import LaneInfo
 
-from voronoi.msg import LineSegment, VoronoiPlannerInput, VoronoiPlannerOutput
+from GoHeelsRacing.msg import LineSegment, VoronoiPlannerInput, VoronoiPlannerOutput
 from geometry_msgs.msg import Vector3
 import carla
 import math
@@ -126,9 +127,9 @@ class VehicleDecision():
             "/carla/%s/vehicle_info" % role_name, CarlaEgoVehicleInfo, self.vehicleInfoCallback)
 
         self.voronoiPub = rospy.Publisher(
-            "/voronoi_input", VoronoiPlannerInput, queue_size=1)
+            "/planner_input", VoronoiPlannerInput, queue_size=1)
         self.subVoronoi = rospy.Subscriber(
-            "/voronoi_output", VoronoiPlannerOutput, self.planCallback)
+            "/planner_output", VoronoiPlannerOutput, self.planCallback)
 
         self.lookahead = 5.0  # meters
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback

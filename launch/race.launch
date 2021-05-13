@@ -1,0 +1,4 @@
+<launch>
+  <node name="GoHeelsRacing_planner" pkg="GoHeelsRacing" type="planner" />
+  <node name="GoHeelsRacing_main" pkg="GoHeelsRacing" type="main.py" />
+</launch>

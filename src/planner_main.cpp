@@ -1,8 +1,8 @@
 #include "ros/ros.h"
 #include "VoronoiPlanner.h"
-#include "voronoi/LineSegment.h"
-#include "voronoi/VoronoiPlannerInput.h"
-#include "voronoi/VoronoiPlannerOutput.h"
+#include "GoHeelsRacing/LineSegment.h"
+#include "GoHeelsRacing/VoronoiPlannerInput.h"
+#include "GoHeelsRacing/VoronoiPlannerOutput.h"
 #include <ostream>
 #include <signal.h>
 #include <functional>
@@ -12,11 +12,11 @@ class ManageROS
 public:
     ManageROS()
     {
-        planner_sub = ros_node.subscribe<voronoi::VoronoiPlannerInput>("voronoi_input", 1, &ManageROS::OnVoronoiInput, this);
-        planner_pub = ros_node.advertise<voronoi::VoronoiPlannerOutput>("voronoi_output", 1);
+        planner_sub = ros_node.subscribe<GoHeelsRacing::VoronoiPlannerInput>("planner_input", 1, &ManageROS::OnVoronoiInput, this);
+        planner_pub = ros_node.advertise<GoHeelsRacing::VoronoiPlannerOutput>("planner_output", 1);
     }
 
-    void OnVoronoiInput(const voronoi::VoronoiPlannerInput::ConstPtr &msg)
+    void OnVoronoiInput(const GoHeelsRacing::VoronoiPlannerInput::ConstPtr &msg)
     {
         std::cout << "Input. " << std::flush;
         // Convert VoronoiPlannerInput
@@ -46,7 +46,7 @@ public:
 
     void Publish(const std::vector<point_type> &plan, std::vector<segment_type> &roadmap) const
     {
-        voronoi::VoronoiPlannerOutput output;
+        GoHeelsRacing::VoronoiPlannerOutput output;
         for (auto &point : plan)
         {
             geometry_msgs::Vector3 outPoint;
@@ -57,7 +57,7 @@ public:
         }
         for (auto &segment : roadmap)
         {
-            voronoi::LineSegment outSegment;
+            GoHeelsRacing::LineSegment outSegment;
             outSegment.start.x = segment.low().x();
             outSegment.start.y = segment.low().y();
             outSegment.start.z = 0.0;
