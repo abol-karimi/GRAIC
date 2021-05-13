@@ -380,7 +380,8 @@ class VehicleDecision():
         self.currentState = currentState
 
         # Publish obstacles for VoronoiPlanner
-        self.pubPlannerInput(currentState, obstacleList)
+        self.pubPlannerInput(
+            currentState, obstacleList if obstacleList != None else [])
 
         if not self.plan:
             print('No plans received yet.')
