@@ -136,12 +136,6 @@ class VehicleDecision():
         self.milestone = None
         self.lane_info = None
 
-        # For debuggin purposes. TODO delete later
-        host = rospy.get_param('~host', 'localhost')
-        port = rospy.get_param('~port', 2000)
-        client = carla.Client(host, port)
-        self.world = client.get_world()
-
     def lanemarkerCallback(self, data):
         self.lane_info = data
 
@@ -164,20 +158,6 @@ class VehicleDecision():
         self.roadmap = [(self.rearAxle_to_map(self.currentState, V3_to_Loc(seg.start)),
                          self.rearAxle_to_map(self.currentState, V3_to_Loc(seg.end)))
                         for seg in data.roadmap]
-
-        # ---- Visualization ----
-        h0 = carla.Location(
-            0, 0, self.lane_info.lane_markers_center.location[-1].z + 0.5)
-        h1 = carla.Location(
-            0, 0, self.lane_info.lane_markers_center.location[-1].z + 1.0)
-        # Roadmap
-        for loc0, loc1 in self.roadmap:
-            self.world.debug.draw_line(
-                loc0+h0, loc1+h0, thickness=0.1, color=carla.Color(255, 255, 255), life_time=0.1)
-        # Plan
-        for i in range(len(self.plan)-1):
-            self.world.debug.draw_line(
-                self.plan[i]+h1, self.plan[i+1]+h1, thickness=0.2, color=carla.Color(0, i*4, 0), life_time=0.1)
 
     def rearAxle_to_map(self, currentState, loc):
         currentEuler = currentState[1]
@@ -326,16 +306,6 @@ class VehicleDecision():
             data.obstacles.append(LineSegment(start, end))
 
         self.voronoiPub.publish(data)
-
-        # ----- Visualization----
-        # Road boundaries
-        for bound in road_boundaries:
-            self.world.debug.draw_line(
-                bound[0], bound[1], thickness=0.2, life_time=0.1)
-
-        # Milestone
-        self.world.debug.draw_line(
-            milestone, milestone+carla.Location(0, 0, 5), color=carla.Color(0, 255, 0), life_time=0.1)
 
     def get_speed(self, plan_full):
         plan = [plan_full[0]]
