@@ -166,18 +166,18 @@ class VehicleDecision():
                         for seg in data.roadmap]
 
         # ---- Visualization ----
-        h0 = carla.Location(
-            0, 0, self.lane_info.lane_markers_center.location[-1].z + 0.5)
-        h1 = carla.Location(
-            0, 0, self.lane_info.lane_markers_center.location[-1].z + 1.0)
-        # Roadmap
-        for loc0, loc1 in self.roadmap:
-            self.world.debug.draw_line(
-                loc0+h0, loc1+h0, thickness=0.1, color=carla.Color(255, 255, 255), life_time=0.1)
-        # Plan
-        for i in range(len(self.plan)-1):
-            self.world.debug.draw_line(
-                self.plan[i]+h1, self.plan[i+1]+h1, thickness=0.2, color=carla.Color(0, i*4, 0), life_time=0.1)
+        # h0 = carla.Location(
+        #     0, 0, self.lane_info.lane_markers_center.location[-1].z + 0.5)
+        # h1 = carla.Location(
+        #     0, 0, self.lane_info.lane_markers_center.location[-1].z + 1.0)
+        # # Roadmap
+        # for loc0, loc1 in self.roadmap:
+        #     self.world.debug.draw_line(
+        #         loc0+h0, loc1+h0, thickness=0.1, color=carla.Color(255, 255, 255), life_time=0.1)
+        # # Plan
+        # for i in range(len(self.plan)-1):
+        #     self.world.debug.draw_line(
+        #         self.plan[i]+h1, self.plan[i+1]+h1, thickness=0.2, color=carla.Color(0, i*4, 0), life_time=0.1)
 
     def rearAxle_to_map(self, currentState, loc):
         currentEuler = currentState[1]
@@ -325,7 +325,37 @@ class VehicleDecision():
             end = Vector3(s1.x, s1.y, 0.0)
             data.obstacles.append(LineSegment(start, end))
 
-        self.voronoiPub.publish(data)
+        # self.voronoiPub.publish(data)
+
+        from planner import Planner
+        front = [self.wheelbase*1.5, 0]  # in rear axle
+        walls = []
+        for segment in boundaries:
+            s0 = self.map_to_rearAxle(currentState, segment[0])
+            s1 = self.map_to_rearAxle(currentState, segment[1])
+            start = [s0.x, s0.y]
+            end = [s1.x, s1.y]
+            walls.append([start, end])
+        planner = Planner()
+        plan = planner.get_plan(
+            front, (data.milestone.x, data.milestone.y), walls, self.allowed_obs_dist)
+
+        for i in range(len(plan)-1):
+            pi = carla.Location(plan[i][0], plan[i][1], road_center.z)
+            pii = carla.Location(plan[i+1][0], plan[i+1][1], road_center.z)
+            pi = self.rearAxle_to_map(currentState, pi)
+            pii = self.rearAxle_to_map(currentState, pii)
+            self.world.debug.draw_line(
+                pi, pii, thickness=0.2, color=carla.Color(0, 255, 0), life_time=0.1)
+
+        roadmap = planner.get_roadmap_segments()
+        for seg in roadmap:
+            s = carla.Location(seg[0][0], seg[0][1], road_center.z)
+            e = carla.Location(seg[1][0], seg[1][1], road_center.z)
+            start = self.rearAxle_to_map(currentState, s)
+            end = self.rearAxle_to_map(currentState, e)
+            self.world.debug.draw_line(
+                start, end, thickness=0.1, color=carla.Color(0, 0, 255), life_time=0.1)
 
         # ----- Visualization----
         # Road boundaries
