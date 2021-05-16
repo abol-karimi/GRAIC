@@ -1,0 +1,2 @@
+# No python requirements.
+# Download and unzip the C++ Boost 1.72.0 library to ~/Downloads/boost_1_72_0 (or adjust the 'include_directories' in CMakeLists.txt).
