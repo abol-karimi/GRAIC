@@ -100,9 +100,29 @@ void VoronoiPlanner::MakeRoadmap(const point_type &car_location, const std::vect
 		if (edge.is_finite() && edge.vertex0()->color() == 0 && edge.vertex1()->color() == 0)
 		{
 			if (edge.is_linear())
-				add_linear_edge(edge, voronoi_to_roadmap);
+			{
+				try
+				{
+					add_linear_edge(edge, voronoi_to_roadmap);
+				}
+				catch (int e)
+				{
+					std::cout << "Failed adding linear edge." << std::endl
+										<< std::flush;
+				}
+			}
 			else
-				add_curved_edge(edge, voronoi_to_roadmap, Walls_mm);
+			{
+				try
+				{
+					add_curved_edge(edge, voronoi_to_roadmap, Walls_mm);
+				}
+				catch (int e)
+				{
+					std::cout << "Failed adding curved edge." << std::endl
+										<< std::flush;
+				}
+			}
 		}
 	}
 	std::cout << "Edges. " << std::flush;
@@ -192,8 +212,20 @@ VoronoiPlanner::edge_descriptor VoronoiPlanner::add_roadmap_edge(vertex_descript
 /// Assumes the roadmap vertices have been added before.
 void VoronoiPlanner::add_linear_edge(const edge_type &edge, std::unordered_map<const vertex_type *, vertex_descriptor> &voronoi_to_roadmap)
 {
-	const vertex_descriptor roadmap_vertex0 = voronoi_to_roadmap.at(edge.vertex0());
-	const vertex_descriptor roadmap_vertex1 = voronoi_to_roadmap.at(edge.vertex1());
+	vertex_descriptor roadmap_vertex0;
+	vertex_descriptor roadmap_vertex1;
+	try
+	{
+		roadmap_vertex0 = voronoi_to_roadmap.at(edge.vertex0());
+		roadmap_vertex1 = voronoi_to_roadmap.at(edge.vertex1());
+	}
+	catch (int e)
+	{
+		std::cout << "Trying to add edge for nonexistent vertices!" << std::endl
+							<< std::flush;
+		return;
+	}
+
 	point_type p0(edge.vertex0()->x(), edge.vertex0()->y());
 	point_type p1(edge.vertex1()->x(), edge.vertex1()->y());
 	add_roadmap_edge(roadmap_vertex0, roadmap_vertex1, euclidean_distance(p0, p1) / 1000.f);
@@ -216,9 +248,20 @@ void VoronoiPlanner::add_curved_edge(const edge_type &edge, std::unordered_map<c
 		if (euclidean_distance(segment, focus) < allowed_obs_dist * 1000.f)
 			return;
 	}
+
 	std::vector<vertex_descriptor> vertices(samples.size());
-	vertices[0] = voronoi_to_roadmap.at(edge.vertex0());
-	vertices[samples.size() - 1] = voronoi_to_roadmap.at(edge.vertex1());
+	try
+	{
+		vertices[0] = voronoi_to_roadmap.at(edge.vertex0());
+		vertices[samples.size() - 1] = voronoi_to_roadmap.at(edge.vertex1());
+	}
+	catch (int e)
+	{
+		std::cout << "Trying to add edge for nonexistent vertices!" << std::endl
+							<< std::flush;
+		return;
+	}
+
 	// Add all the new points from discretization to the roadmap
 	for (std::size_t i = 1; i < samples.size() - 1; ++i)
 		vertices[i] = add_roadmap_vertex(boost::polygon::scale_down(samples[i], 1000));
@@ -284,12 +327,12 @@ void VoronoiPlanner::GetRoadmapSegments(std::vector<segment_type> &segments) // 
 		point_type point0 = get(coordinates_map, vertex0);
 		point_type point1 = get(coordinates_map, vertex1);
 		double diff = abs(euclidean_distance(point0, point1) - weight_map[*ei]);
-		if (diff > 0.001)
-		{
-			std::cout << "Dist: " << euclidean_distance(point0, point1) << ", Weight: " << weight_map[*ei]
-								<< " (" << point0.x() << "," << point0.y() << "), (" << point1.x() << "," << point1.y() << ")" << std::endl
-								<< std::flush;
-		}
+		// if (diff > 0.001)
+		// {
+		// 	std::cout << "Dist: " << euclidean_distance(point0, point1) << ", Weight: " << weight_map[*ei]
+		// 						<< " (" << point0.x() << "," << point0.y() << "), (" << point1.x() << "," << point1.y() << ")" << std::endl
+		// 						<< std::flush;
+		// }
 		segments.push_back(segment_type(point0, point1));
 	}
 }
