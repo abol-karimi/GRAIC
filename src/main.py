@@ -36,12 +36,15 @@ class VehicleController():
     def __init__(self, role_name='ego_vehicle'):
         # Publisher to publish the control input to the vehicle model
         self.role_name = role_name
-        self.controlPub = rospy.Publisher(
+        self.ackermannControlPub = rospy.Publisher(
             "/carla/%s/ackermann_control" % role_name, AckermannDrive, queue_size=1)
+        self.carlaControlPub = rospy.Publisher(
+            "/carla/%s/vehicle_control" % role_name, CarlaEgoVehicleControl, queue_size=1)
         self.subVehicleInfo = rospy.Subscriber(
             "/carla/%s/vehicle_info" % role_name, CarlaEgoVehicleInfo, self.vehicleInfoCallback)
 
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
+        self.brake_coeff = 1.0  # To tune speed_diff-throttle curve
 
     def vehicleInfoCallback(self, data):
         p = [w.position for w in data.wheels]
@@ -50,12 +53,15 @@ class VehicleController():
         self.wheelbase = np.linalg.norm([r2f_x, r2f_y])
         print(f'Controller set wheelbase to {self.wheelbase} meters.')
 
+        self.max_steer_rad = data.wheels[0].max_steer_angle
+        print(f'Controller set max_steer_rad to {self.max_steer_rad} radians.')
+
     def stop(self):
         newAckermannCmd = AckermannDrive()
         newAckermannCmd.acceleration = -20
         newAckermannCmd.speed = 0
         newAckermannCmd.steering_angle = 0
-        self.controlPub.publish(newAckermannCmd)
+        self.ackermannControlPub.publish(newAckermannCmd)
 
     def execute(self, currentState, targetState):
         """
@@ -95,15 +101,45 @@ class VehicleController():
         d2 = xError**2 + yError**2
         steer_rad = math.atan(2 * self.wheelbase * yError / d2)
 
-        # print(f'steer_rad: {steer_rad:8}, target_v: {target_v: 8}')
+        # Map the steering angle to ratio of maximum possible steering angle
+        steer_rad = np.clip(steer_rad, -self.max_steer_rad, self.max_steer_rad)
+        steer_ratio = steer_rad/self.max_steer_rad
 
-        newAckermannCmd = AckermannDrive()
-        newAckermannCmd.acceleration = 0  # Change speed as quickly as possible
-        newAckermannCmd.speed = targetState[2]
-        newAckermannCmd.steering_angle = steer_rad
-        # Change angle as quickly as possible:
-        newAckermannCmd.steering_angle_velocity = 0
-        self.controlPub.publish(newAckermannCmd)
+        currentSpeed = math.sqrt(currentState[2][0]**2+currentState[2][1]**2)
+        speed_error = targetState[2] - currentSpeed
+
+        brake_activation = -1.0
+        coast_activation = 0.0
+        if speed_error > coast_activation:
+            newAckermannCmd = AckermannDrive()
+            newAckermannCmd.acceleration = 0  # Change speed as quickly as possible
+            newAckermannCmd.speed = targetState[2]
+            newAckermannCmd.steering_angle = steer_rad
+            # Change angle as quickly as possible:
+            newAckermannCmd.steering_angle_velocity = 0
+            self.ackermannControlPub.publish(newAckermannCmd)
+        elif speed_error >= brake_activation:
+            print(f'Coast.')
+            newControlCmd = CarlaEgoVehicleControl()
+            newControlCmd.throttle = 0
+            newControlCmd.steer = steer_ratio
+            newControlCmd.brake = 0
+            newControlCmd.hand_brake = False
+            newControlCmd.reverse = False
+            newControlCmd.manual_gear_shift = False
+            self.carlaControlPub.publish(newControlCmd)
+        else:  # brake_activation > speed_error
+            brake = min(1,
+                        math.atan(self.brake_coeff*(brake_activation-speed_error)))
+            print(f'Brake: {brake}')
+            newControlCmd = CarlaEgoVehicleControl()
+            newControlCmd.throttle = 0
+            newControlCmd.steer = steer_ratio
+            newControlCmd.brake = brake
+            newControlCmd.hand_brake = False
+            newControlCmd.reverse = False
+            newControlCmd.manual_gear_shift = False
+            self.carlaControlPub.publish(newControlCmd)
 
 
 class VehicleDecision():
@@ -125,8 +161,8 @@ class VehicleDecision():
         self.lookahead = 5.0  # meters
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
         self.allowed_obs_dist = 1.7  # meters from Voronoi diagram to obstacles
-        self.max_speed = 15
-        self.min_speed = 5
+        self.max_speed = 25
+        self.min_speed = 10
         self.speed_coeff = 0.3  # to tune the speed controller
 
         self.plan = []
@@ -344,8 +380,18 @@ class VehicleDecision():
                 continue
             plan.append(p)
 
+        horizon = 10  # meters
+        plan_len = 0
+        i = 0
+        for i in range(len(plan)-1):
+            v = plan[i+1] - plan[i]
+            plan_len += math.sqrt(v.x**2 + v.y**2)
+            if plan_len > horizon:
+                break
+        i_horizon = i
+
         max_curv = 0.0
-        for i in range(len(plan)-2):
+        for i in range(i_horizon):
             v0 = plan[i+1] - plan[i]
             v1 = plan[i+2] - plan[i+1]
             v0_n = math.sqrt(v0.x**2 + v0.y**2)
