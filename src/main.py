@@ -44,6 +44,9 @@ class VehicleController():
             "/carla/%s/vehicle_info" % role_name, CarlaEgoVehicleInfo, self.vehicleInfoCallback)
 
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
+        # will be overridden by vehicleInfoCallback
+        self.max_steer_rad = math.radians(70)
+
         self.brake_coeff = 1.0  # To tune speed_diff-throttle curve
 
     def vehicleInfoCallback(self, data):
@@ -426,7 +429,13 @@ class VehicleDecision():
 
         if len(self.plan) == 0:
             print('No plans received yet.')
-            return [0.0, 0.0, 0.0]
+            if self.lane_info:
+                print('Follow current lane.')
+                x = self.lane_info.lane_markers_center.location[-1].x
+                y = self.lane_info.lane_markers_center.location[-1].y
+                return [x, y, 5.0]
+            else:
+                return [0, 0, 0]
 
         # Find the waypoint with lookahead distance from real axle
         ra = self.rearAxle_to_map(currentState, carla.Location())
