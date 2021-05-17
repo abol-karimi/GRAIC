@@ -429,13 +429,7 @@ class VehicleDecision():
 
         if len(self.plan) == 0:
             print('No plans received yet.')
-            if self.lane_info:
-                print('Follow current lane.')
-                x = self.lane_info.lane_markers_center.location[-1].x
-                y = self.lane_info.lane_markers_center.location[-1].y
-                return [x, y, 5.0]
-            else:
-                return [0, 0, 0]
+            return [0, 0, 0]
 
         # Find the waypoint with lookahead distance from real axle
         ra = self.rearAxle_to_map(currentState, carla.Location())
