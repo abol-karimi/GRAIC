@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import rospy
 import rospkg
 import numpy as np
@@ -37,17 +37,23 @@ class VehicleController():
         # Publisher to publish the control input to the vehicle model
         self.role_name = role_name
         self.ackermannControlPub = rospy.Publisher(
-            "/carla/%s/ackermann_control" % role_name, AckermannDrive, queue_size=1)
+            "/carla/%s/ackermann_cmd" % role_name, AckermannDrive, queue_size=1)
         self.carlaControlPub = rospy.Publisher(
-            "/carla/%s/vehicle_control" % role_name, CarlaEgoVehicleControl, queue_size=1)
+            "/carla/%s/vehicle_control_cmd" % role_name, CarlaEgoVehicleControl, queue_size=1)
         self.subVehicleInfo = rospy.Subscriber(
             "/carla/%s/vehicle_info" % role_name, CarlaEgoVehicleInfo, self.vehicleInfoCallback)
 
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
         # will be overridden by vehicleInfoCallback
         self.max_steer_rad = math.radians(70)
+        self.max_speed = 25
+        self.min_speed = 10
+
+        self.old_steering = 0.0 # new variable to tune the turning based on speed
 
         self.brake_coeff = 1.0  # To tune speed_diff-throttle curve
+
+
 
     def vehicleInfoCallback(self, data):
         p = [w.position for w in data.wheels]
@@ -55,11 +61,18 @@ class VehicleController():
         r2f_y = 0.5*(p[0].y + p[1].y - (p[2].y + p[3].y))
         self.wheelbase = np.linalg.norm([r2f_x, r2f_y])
         print(f'Controller set wheelbase to {self.wheelbase} meters.')
+        rospy.logwarn(f'Controller set wheelbase to {self.wheelbase} meters.')
 
         self.max_steer_rad = data.wheels[0].max_steer_angle
         print(f'Controller set max_steer_rad to {self.max_steer_rad} radians.')
+        rospy.logwarn(f'Controller set max_steer_rad to {self.max_steer_rad} radians.')
+
+
+    def initiate(self):
+        self.carlaControlPub.publish(CarlaEgoVehicleControl())
 
     def stop(self):
+        rospy.logwarn("stop")
         newAckermannCmd = AckermannDrive()
         newAckermannCmd.acceleration = -20
         newAckermannCmd.speed = 0
@@ -74,12 +87,19 @@ class VehicleController():
                 currentPose: ModelState, the current state of vehicle
                 targetPose: The desired state of the vehicle
         """
+        import math
         if not targetState[0] or not targetState[1]:
+            self.carlaControlPub.publish(CarlaEgoVehicleControl())
+            rospy.logwarn("no control")
             return
 
         currentEuler = currentState[1]
         curr_x = currentState[0][0]
         curr_y = currentState[0][1]
+
+        currentSpeed = math.sqrt(currentState[2][0] ** 2 + currentState[2][1] ** 2)
+        speed_error = targetState[2] - currentSpeed
+        curr_speed = np.clip(currentSpeed, self.min_speed, self.max_speed)
 
         car_loc = carla.Location(curr_x, curr_y, 0)
         car_rot = carla.Rotation(0, np.degrees(currentEuler[2]), 0)
@@ -103,26 +123,29 @@ class VehicleController():
         import math
         d2 = xError**2 + yError**2
         steer_rad = math.atan(2 * self.wheelbase * yError / d2)
+        #steer_error = steer_rad - self.old_steering
+
+        #steer_rad = self.old_steering + steer_error* (1.0 / (1.0 + np.exp((curr_Speed - self.max_speed) / (curr_Speed - self.min_speed)))) # change the steering angle by a factor of (0.5: at max speed; 1.0: at minimum speed)
 
         # Map the steering angle to ratio of maximum possible steering angle
         steer_rad = np.clip(steer_rad, -self.max_steer_rad, self.max_steer_rad)
         steer_ratio = steer_rad/self.max_steer_rad
 
-        currentSpeed = math.sqrt(currentState[2][0]**2+currentState[2][1]**2)
-        speed_error = targetState[2] - currentSpeed
-
-        brake_activation = -1.0
+        self.old_steering = steer_rad
+        accelerate_activation = 5.0
+        brake_activation = -5.0
         coast_activation = 0.0
         if speed_error > coast_activation:
             newAckermannCmd = AckermannDrive()
             newAckermannCmd.acceleration = 0  # Change speed as quickly as possible
             newAckermannCmd.speed = targetState[2]
-            newAckermannCmd.steering_angle = steer_rad
+            newAckermannCmd.steering_angle = -steer_rad
             # Change angle as quickly as possible:
-            newAckermannCmd.steering_angle_velocity = 0
+            newAckermannCmd.steering_angle_velocity = 5
             self.ackermannControlPub.publish(newAckermannCmd)
         elif speed_error >= brake_activation:
             print(f'Coast.')
+            rospy.logwarn("coast")
             newControlCmd = CarlaEgoVehicleControl()
             newControlCmd.throttle = 0
             newControlCmd.steer = steer_ratio
@@ -135,6 +158,7 @@ class VehicleController():
             brake = min(1,
                         math.atan(self.brake_coeff*(brake_activation-speed_error)))
             print(f'Brake: {brake}')
+            rospy.logwarn("brake")
             newControlCmd = CarlaEgoVehicleControl()
             newControlCmd.throttle = 0
             newControlCmd.steer = steer_ratio
@@ -147,26 +171,32 @@ class VehicleController():
 
 class VehicleDecision():
     def __init__(self, role_name='ego_vehicle'):
-        self.subLaneMarker = rospy.Subscriber(
-            "/carla/%s/lane_markers" % role_name, LaneInfo, self.lanemarkerCallback)
-
-        self.subWaypoint = rospy.Subscriber(
-            "/carla/%s/waypoints" % role_name, WaypointInfo, self.waypointCallback)
-
-        self.subVehicleInfo = rospy.Subscriber(
-            "/carla/%s/vehicle_info" % role_name, CarlaEgoVehicleInfo, self.vehicleInfoCallback)
+        # rospy.Subscriber("/carla/%s/lane_markers" % role_name, LaneInfo, self.lanemarkerCallback)
+        # rospy.Subscriber("/carla/%s/waypoints" % role_name, WaypointInfo, self.waypointCallback)
+        rospy.Subscriber("/carla/%s/vehicle_info" % role_name, CarlaEgoVehicleInfo, self.vehicleInfoCallback)
+        # rospy.Subscriber("/carla/%s/location" % role_name, LocationInfo, self.locationCallback)
+        # rospy.Subscriber("/carla/%s/obstacles" % role_name, ObstacleList, self.obstacleCallback)
 
         self.voronoiPub = rospy.Publisher(
             "/planner_input", VoronoiPlannerInput, queue_size=1)
         self.subVoronoi = rospy.Subscriber(
             "/planner_output", VoronoiPlannerOutput, self.planCallback)
 
+
+        self.position = None
+        self.velocity = None
+        self.rotation = None
+        self.obstacleList = None
+
         self.lookahead = 5.0  # meters
         self.wheelbase = 2.0  # will be overridden by vehicleInfoCallback
         self.allowed_obs_dist = 1.7  # meters from Voronoi diagram to obstacles
         self.max_speed = 25
         self.min_speed = 10
-        self.speed_coeff = 0.3  # to tune the speed controller
+        self.speed_coeff = 0.35  # to tune the speed controller
+        self.friction_coeff = 0.5
+        self.old_prediction = []
+        self.history = []
 
         self.plan = []
         self.roadmap = []
@@ -181,13 +211,6 @@ class VehicleDecision():
         client = carla.Client(host, port)
         self.world = client.get_world()
 
-    def lanemarkerCallback(self, data):
-        self.lane_info = data
-
-    def waypointCallback(self, data):
-        self.reachEnd = data.reachedFinal
-        self.milestone = carla.Location(
-            data.location.x, data.location.y, data.location.z)
 
     def vehicleInfoCallback(self, data):
         p = [w.position for w in data.wheels]
@@ -197,19 +220,20 @@ class VehicleDecision():
         print(f'Planner set wheelbase to {self.wheelbase} meters.')
 
     def planCallback(self, data):
+        #rospy.logwarn("planCallback")
         self.plan = [self.rearAxle_to_map(
-            self.currentState, V3_to_Loc(v)) for v in data.plan]
+            self.currState, V3_to_Loc(v)) for v in data.plan]
 
-        self.roadmap = [(self.rearAxle_to_map(self.currentState, V3_to_Loc(seg.start)),
-                         self.rearAxle_to_map(self.currentState, V3_to_Loc(seg.end)))
+        self.roadmap = [(self.rearAxle_to_map(self.currState, V3_to_Loc(seg.start)),
+                         self.rearAxle_to_map(self.currState, V3_to_Loc(seg.end)))
                         for seg in data.roadmap]
 
-        # ---- Visualization ----
+        #---- Visualization ----
         h0 = carla.Location(
             0, 0, self.lane_info.lane_markers_center.location[-1].z + 0.5)
         h1 = carla.Location(
             0, 0, self.lane_info.lane_markers_center.location[-1].z + 1.0)
-        # Roadmap
+        #Roadmap
         for loc0, loc1 in self.roadmap:
             self.world.debug.draw_line(
                 loc0+h0, loc1+h0, thickness=0.1, color=carla.Color(255, 255, 255), life_time=0.1)
@@ -268,6 +292,8 @@ class VehicleDecision():
         return [ps[0]] + [p[1] for p in pccw]
 
     def pubPlannerInput(self, currentState, obstacles):
+
+        obstacles = self.obstacleList
         road_boundaries = []
 
         # If no milestones seen so far
@@ -368,49 +394,181 @@ class VehicleDecision():
 
         # ----- Visualization----
         # Road boundaries
-        for bound in road_boundaries:
-            self.world.debug.draw_line(
-                bound[0], bound[1], thickness=0.2, life_time=0.1)
+        # for bound in road_boundaries:
+        #     self.world.debug.draw_line(
+        #         bound[0], bound[1], thickness=0.2, life_time=0.1)
+        #
+        # # Milestone
+        # self.world.debug.draw_line(
+        #     milestone, milestone+carla.Location(0, 0, 5), color=carla.Color(0, 255, 0), life_time=0.1)
 
-        # Milestone
-        self.world.debug.draw_line(
-            milestone, milestone+carla.Location(0, 0, 5), color=carla.Color(0, 255, 0), life_time=0.1)
 
-    def get_speed(self, plan_full):
+    def map_to_line_segment(self, line_segment, loc, angle): # transform global location and angle to withrespect to the location frame of the line_segment
+        origin = line_segment[0]
+        line_angle = math.atan2(line_segment[1].y-line_segment[0].y, line_segment[1].x-line_segment[0].x)
+        car_rot = carla.Rotation(0, math.degrees(line_angle), 0)
+        forward = car_rot.get_forward_vector()
+        right = car_rot.get_right_vector()
+        v = loc - origin
+        vx = forward.x * v.x + forward.y * v.y
+        vy = right.x * v.x + right.y * v.y
+        l = carla.Location(vx, vy, 0)
+        a = angle - line_angle
+        if a < -math.pi:
+            a += 2*math.pi
+        if a > math.pi:
+            a -= 2*math.pi
+        return (l, a)
+
+    def line_segment_to_map(self, line_segment, loc, angle): # transform local location and angle with respect to a line_segment to global
+        origin = line_segment[0]
+        line_angle = math.atan2(line_segment[1].y - line_segment[0].y, line_segment[1].x - line_segment[0].x)
+        car_loc = carla.Location(origin.x, origin.y, 0)
+        car_rot = carla.Rotation(0, np.degrees(line_angle), 0)
+        car2map = carla.Transform(car_loc, car_rot)
+        l = carla.Location(car2map.transform(loc))
+        a = angle + line_angle
+        if a < -math.pi:
+            a += 2 * math.pi
+        if a > math.pi:
+            a -= 2 * math.pi
+        return (l, a)
+
+    def define_circle(self, p1, p2, p3):
+        """
+        Returns the radius of the circle passing the given 3 points.
+        """
+        temp = p2[0] * p2[0] + p2[1] * p2[1]
+        bc = (p1[0] * p1[0] + p1[1] * p1[1] - temp) / 2
+        cd = (temp - p3[0] * p3[0] - p3[1] * p3[1]) / 2
+        det = (p1[0] - p2[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p2[1])
+
+        if abs(det) < 1.0e-6: # the points form a line
+            return np.inf
+
+        # Center of circle
+        cx = (bc*(p2[1] - p3[1]) - cd*(p1[1] - p2[1])) / det
+        cy = ((p1[0] - p2[0]) * cd - (p2[0] - p3[0]) * bc) / det
+
+        radius = np.sqrt((cx - p1[0])**2 + (cy - p1[1])**2)
+        return radius
+
+
+    def get_min_turn_radius(self, pp): # use line segments to find the circle approximation of the path and determine max curv:
+        predicted_pos = [pp[0]]
+        for i in range(1, len(pp)):
+            if pp[i].distance(predicted_pos[-1])<=0.1:
+                continue
+            predicted_pos.append(pp[i])
+        min_turn_radius = math.inf
+        min_turn_point = None
+        for i in range(len(predicted_pos)-2):
+            p1 = [predicted_pos[i].x,  predicted_pos[i].y]
+            p2 = [predicted_pos[i+1].x,  predicted_pos[i+1].y]
+            p3 = [predicted_pos[i+2].x,  predicted_pos[i+2].y]
+            turn_radius = self.define_circle(p1, p2, p3)
+            if turn_radius < min_turn_radius:
+                min_turn_radius = turn_radius
+                min_turn_point = predicted_pos[i]
+
+        #visualization
+        if min_turn_point != None:
+            self.world.debug.draw_line(carla.Location(min_turn_point.x, min_turn_point.y, 0.0), carla.Location(min_turn_point.x, min_turn_point.y, 2.0), color=carla.Color(255, 0, 0), life_time=0.1)
+
+        return min_turn_radius
+
+    def skidding_control(self, currentState):
+        # look for deviation from the predicted plan, update friction coeffecient accordingly
+        currentSpeed = math.sqrt(currentState[1][0]**2 + currentState[1][1]**2)
+        currentPose = carla.Location(currentState[0][0], currentState[0][1], 0)
+        predicted_pose = self.old_prediction
+        for i in range(len(predicted_pose)-1):
+
+            break
+        return
+
+    def get_speed(self, plan_full, currentState, lookahead): # use model predictive control to calculate target speed
         plan = [plan_full[0]]
         for p in plan_full:
-            if p.distance(plan[-1]) < 0.01:
+            if p.distance(plan[-1]) < 0.5: # track plan with line segments of 0.5m
                 continue
             plan.append(p)
-
-        horizon = 10  # meters
-        plan_len = 0
-        i = 0
-        for i in range(len(plan)-1):
-            v = plan[i+1] - plan[i]
-            plan_len += math.sqrt(v.x**2 + v.y**2)
-            if plan_len > horizon:
+        nodes = []
+        for i in range(1, len(plan)):
+            if plan[i].distance(plan[0]) > 15:  # only check for 15m ahead
                 break
-        i_horizon = i
+            nodes += [(plan[i-1], plan[i])]
 
-        max_curv = 0.0
-        for i in range(i_horizon):
-            v0 = plan[i+1] - plan[i]
-            v1 = plan[i+2] - plan[i+1]
-            v0_n = math.sqrt(v0.x**2 + v0.y**2)
-            v1_n = math.sqrt(v1.x**2 + v1.y**2)
-            inner = v0.x*v1.x + v0.y*v1.y
-            cos = inner/(v0_n*v1_n)
-            cos = np.clip(cos, -1, 1)
-            max_curv = max(math.acos(cos), max_curv)
+        global_loc = self.rearAxle(currentState)
+        self.history.append(global_loc)
+        predicted_pos = [global_loc]
+        global_angle = currentState[1][2]
+        current_node_ind = 0
+        step_size = 0.1 # step size = 0.05s
+        #current_speed = np.clip(math.sqrt(currentState[2][0]**2 + currentState[2][1]**2),self.min_speed, self.max_speed)
+        #rospy.logwarn(current_speed)
+        while current_node_ind < len(nodes):
+            current_node = nodes[current_node_ind] #move on to the next line segment
+            (relative_loc, relative_angle) = self.map_to_line_segment(current_node, global_loc, global_angle)
+            line_segment_length = current_node[0].distance(current_node[1])
+            #while math.sqrt(relative_loc.x**2 + relative_loc.y**2) < line_segment_length and relative_loc.x < line_segment_length:
+            while  math.sqrt((line_segment_length-relative_loc.x)**2 + relative_loc.y**2) >= lookahead:
+                angle_rate = 2*(-math.sqrt(lookahead**2-min(relative_loc.y**2, lookahead**2))*math.sin(relative_angle) - relative_loc.y*math.cos(relative_angle)) / lookahead**2
+                relative_loc = carla.Location(relative_loc.x+step_size*math.cos(relative_angle), relative_loc.y+step_size*math.sin(relative_angle), 0.0)
+                relative_angle = relative_angle + angle_rate*step_size
+                if relative_angle > math.pi:
+                    relative_angle -= 2*math.pi
+                if relative_angle < -math.pi:
+                    relative_angle += 2*math.pi
+                (temp, _) = self.line_segment_to_map(current_node, carla.Location(relative_loc), relative_angle)
+                predicted_pos.append(temp)
+            (global_loc, global_angle) = self.line_segment_to_map(current_node, relative_loc, relative_angle)
+            current_node_ind += 1
 
-        m = self.min_speed
-        M = self.max_speed
-        k = self.speed_coeff
-        speed = 1/(k*max_curv + 1/(M-m)) + m
+        # update friction coeffecient
+        if len(self.history) >= 3: # enough data point to estimate actual vehicle path's curvature
+            p1 = [self.history[-3].x, self.history[-3].y]
+            p2 = [self.history[-2].x, self.history[-2].y]
+            p3 = [self.history[-1].x, self.history[-1].y]
+            path_radius = self.define_circle(p1, p2, p3)
+            min_deviation_from_plan = math.inf
+            for i in range(len(self.old_prediction)-1):
+                p1 = np.array([self.old_prediction[i].x, self.old_prediction[i].y])
+                p2 = np.array([self.old_prediction[i+1].x, self.old_prediction[i+1].y])
+                p3 = np.array([global_loc.x, global_loc.y])
+                min_deviation_from_plan = min(np.linalg.norm(np.cross(p2-p1, p1-p3))/np.linalg.norm(p2-p1), min_deviation_from_plan) # euler # distance between current position and old predicton
+            current_speed_square = currentState[2][0] ** 2 + currentState[2][1] ** 2
+            if min_deviation_from_plan < 0.2:
+                self.friction_coeff = max(self.friction_coeff, current_speed_square / (path_radius*9.81))
+            if min_deviation_from_plan > 0.5:
+                self.friction_coeff = min(self.friction_coeff, current_speed_square / (path_radius*9.81))
+        rospy.logwarn(self.friction_coeff)
+
+        # visualization
+        for i in range(len(predicted_pos) - 1):
+            self.world.debug.draw_line(
+                carla.Location(predicted_pos[i].x, predicted_pos[i].y, 1.5),
+                carla.Location(predicted_pos[i + 1].x, predicted_pos[i + 1].y, 1.5),
+                color=carla.Color(0, 0, 255), life_time=0.1)
+
+        min_turn_radius = np.clip(self.get_min_turn_radius(predicted_pos), 1e-6, 1e6)
+        speed = np.clip(math.sqrt(self.friction_coeff*min_turn_radius*9.81), self.min_speed, self.max_speed)
+        self.old_prediction = predicted_pos
+
         return speed
 
-    def get_ref_state(self, currentState, obstacleList):
+
+
+    def updateState(self, position, rotation, velocity, obstacleList, lane_info, milestone):
+        self.position = position
+        self.rotation = rotation
+        self.velocity = velocity
+        self.obstacleList = obstacleList
+        self.lane_info = lane_info
+        self.milestone = milestone
+        self.currState = [position, rotation, velocity]
+
+    def get_ref_state(self): # use constant lookahead distance so it's consistent with the model predictive speed control
         """
             Get the reference state for the vehicle according to the current state and result from perception module
             Inputs:
@@ -421,7 +579,8 @@ class VehicleDecision():
         if self.reachEnd:
             return None
 
-        self.currentState = currentState
+        currentState = [self.position, self.rotation, self.velocity]
+        obstacleList = self.obstacleList
 
         # Publish obstacles for VoronoiPlanner
         self.pubPlannerInput(
@@ -431,6 +590,11 @@ class VehicleDecision():
             print('No plans received yet.')
             return [0, 0, 0]
 
+
+        # setting lookahead distance dynamically by speed:
+        # currentSpeed = np.clip(math.sqrt(currentState[1][0]**2 + currentState[1][1]**2), 0.0, self.max_speed)
+        # self.lookahead = 2.0 + 8.0 * (currentSpeed / self.max_speed)
+        # rospy.logwarn(self.lookahead)
         # Find the waypoint with lookahead distance from real axle
         ra = self.rearAxle_to_map(currentState, carla.Location())
         if ra.distance(self.plan[0]) >= self.lookahead:
@@ -441,9 +605,9 @@ class VehicleDecision():
             target = self.plan[-1]
         else:
             for i, loc in enumerate(self.plan):
-                if (loc.x-ra.x)**2 + (loc.y-ra.y)**2 > self.lookahead**2:
+                if (loc.x - ra.x) ** 2 + (loc.y - ra.y) ** 2 > self.lookahead ** 2:
                     break
-            p_in = self.map_to_rearAxle(currentState, self.plan[i-1])
+            p_in = self.map_to_rearAxle(currentState, self.plan[i - 1])
             p_out = self.map_to_rearAxle(currentState, self.plan[i])
 
             # Intercept the lookahead circle with the plan segment (p_in, p_out)
@@ -455,14 +619,14 @@ class VehicleDecision():
             dy = y2 - y1
             A = dx * dx + dy * dy
             B = x1 * dx + y1 * dy
-            C = x1 * x1 + y1 * y1 - self.lookahead**2
+            C = x1 * x1 + y1 * y1 - self.lookahead ** 2
             t = (-B + math.sqrt(B * B - A * C)) / A
 
-            target_in_rearAxle = carla.Location(x1+t*dx, y1+t*dy, 0)
+            target_in_rearAxle = carla.Location(x1 + t * dx, y1 + t * dy, 0)
             target = self.rearAxle_to_map(currentState, target_in_rearAxle)
 
-        speed = self.get_speed(self.plan)
-        currentSpeed = math.sqrt(currentState[2][0]**2+currentState[2][1]**2)
+        speed = self.get_speed(self.plan, currentState, self.lookahead)
+        currentSpeed = math.sqrt(currentState[2][0] ** 2 + currentState[2][1] ** 2)
         print(f'speed: {currentSpeed:.2f}, target speed: {speed:.2f}')
 
         # The latest target computed by plannerCallback
@@ -471,14 +635,18 @@ class VehicleDecision():
 
 class VehiclePerception:
     def __init__(self, role_name='ego_vehicle'):
-        self.locationSub = rospy.Subscriber(
-            "/carla/%s/location" % role_name, LocationInfo, self.locationCallback)
-        self.obstacleSub = rospy.Subscriber(
-            "/carla/%s/obstacles" % role_name, ObstacleList, self.obstacleCallback)
+        rospy.Subscriber("/carla/%s/lane_markers" % role_name, LaneInfo, self.lanemarkerCallback)
+        rospy.Subscriber("/carla/%s/waypoints" % role_name, WaypointInfo, self.waypointCallback)
+        rospy.Subscriber("/carla/%s/location" % role_name, LocationInfo, self.locationCallback)
+        rospy.Subscriber("/carla/%s/obstacles" % role_name, ObstacleList, self.obstacleCallback)
+
         self.position = None
         self.velocity = None
         self.rotation = None
         self.obstacleList = None
+        self.milestone = None
+        self.lane_info = None
+
 
     def locationCallback(self, data):
         self.position = (data.location.x, data.location.y)
@@ -489,10 +657,32 @@ class VehiclePerception:
     def obstacleCallback(self, data):
         self.obstacleList = data.obstacles
 
+    def lanemarkerCallback(self, data):
+        self.lane_info = data
+
+    def waypointCallback(self, data):
+        self.reachEnd = data.reachedFinal
+        self.milestone = carla.Location(
+            data.location.x, data.location.y, data.location.z)
+
+    def ready(self):
+        return (self.position
+                    is not None) and (self.rotation is not None) and (
+                        self.velocity
+                        is not None) and (self.obstacleList is not None) and (self.lane_info is not None) and (self.milestone is not None)
+
+    def clear(self):
+        self.position = None
+        self.velocity = None
+        self.rotation = None
+        self.obstacleList = None
+        self.milestone = None
+        self.lane_info = None
+
+
 
 def run_model(role_name):
-
-    rate = rospy.Rate(100)  # 100 Hz
+  # 100 Hz
 
     perceptionModule = VehiclePerception(role_name=role_name)
     decisionModule = VehicleDecision(role_name)
@@ -502,37 +692,37 @@ def run_model(role_name):
         controlModule.stop()
     rospy.on_shutdown(shut_down)
 
+    time.sleep(1)
+    controlModule.initiate()
+
     print("Starter code is running")
+    #rospy.logwarn("Starter code is running")
 
     while not rospy.is_shutdown():
-        rate.sleep()  # Wait a while before trying to get a new state
-        obstacleList = perceptionModule.obstacleList
-
-        # Get the current position and orientation of the vehicle
-        currState = (perceptionModule.position,
-                     perceptionModule.rotation, perceptionModule.velocity)
-        if not currState or not currState[0]:
-            continue
-
-        # Get the target state from decision module
-        refState = decisionModule.get_ref_state(currState, obstacleList)
-        if not refState:
-            controlModule.stop()
-            exit(0)
-
-        # Execute
-        controlModule.execute(currState, refState)
+        if perceptionModule.ready():
+            # Get the target state from perception module
+            currState = [perceptionModule.position, perceptionModule.rotation, perceptionModule.velocity]
+            decisionModule.updateState(perceptionModule.position, perceptionModule.rotation, perceptionModule.velocity, perceptionModule.obstacleList, perceptionModule.lane_info, perceptionModule.milestone)
+            refState = decisionModule.get_ref_state()
+            if not refState:
+                controlModule.stop()
+                exit(0)
+            perceptionModule.clear()
+            # Execute
+            controlModule.execute(currState, refState)
+        time.sleep(0.01)
 
 
 if __name__ == "__main__":
+    rospy.init_node("voronoi_main", anonymous=True)
     roskpack = rospkg.RosPack()
-    config_path = roskpack.get_path('config_node')
-    race_config = open(config_path+'/'+'race_config', 'rb')
+    config_path = roskpack.get_path('graic_config')
+    race_config = open(config_path + '/' + 'race_config', 'rb')
     vehicle_typeid = race_config.readline().decode('ascii').strip()
     sensing_radius = race_config.readline().decode('ascii').strip()
     role_name = 'ego_vehicle'
 
-    rospy.init_node("voronoi_main")
+    #rospy.init_node("voronoi_main")
     try:
         run_model(role_name)
     except rospy.exceptions.ROSInterruptException:
