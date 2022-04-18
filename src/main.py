@@ -194,13 +194,15 @@ class VehicleDecision():
         self.max_speed = 25
         self.min_speed = 10
         self.speed_coeff = 0.35  # to tune the speed controller
-        self.friction_coeff = 0.5
+        self.friction_coeff = 1.5
         self.old_prediction = []
-        self.history = []
+        self.pos_history = []
 
         self.plan = []
         self.roadmap = []
         self.reachEnd = False
+
+        self.plan_update = 0
 
         self.milestone = None
         self.lane_info = None
@@ -221,6 +223,7 @@ class VehicleDecision():
 
     def planCallback(self, data):
         #rospy.logwarn("planCallback")
+        self.plan_update = 0
         self.plan = [self.rearAxle_to_map(
             self.currState, V3_to_Loc(v)) for v in data.plan]
 
@@ -358,9 +361,9 @@ class VehicleDecision():
 
         obstacle_boundaries = []
         for obs in obstacles:
-            loc = self.map_to_rearAxle(currentState, V3_to_Loc(obs.location))
-            if (loc.x < -2.0):
-                continue  # ignore passed obstacles
+            # loc = self.map_to_rearAxle(currentState, V3_to_Loc(obs.location))
+            # if (loc.x < -2.0):
+            #     continue  # ignore passed obstacles
             poly = []
             if len(obs.vertices_locations) == 0:
                 continue
@@ -438,19 +441,19 @@ class VehicleDecision():
         """
         Returns the radius of the circle passing the given 3 points.
         """
-        temp = p2[0] * p2[0] + p2[1] * p2[1]
-        bc = (p1[0] * p1[0] + p1[1] * p1[1] - temp) / 2
-        cd = (temp - p3[0] * p3[0] - p3[1] * p3[1]) / 2
-        det = (p1[0] - p2[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p2[1])
+        temp = p2.x * p2.x + p2.y * p2.y
+        bc = (p1.x * p1.x + p1.y * p1.y - temp) / 2
+        cd = (temp - p3.x * p3.x - p3.y * p3.y) / 2
+        det = (p1.x - p2.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p2.y)
 
         if abs(det) < 1.0e-6: # the points form a line
             return np.inf
 
         # Center of circle
-        cx = (bc*(p2[1] - p3[1]) - cd*(p1[1] - p2[1])) / det
-        cy = ((p1[0] - p2[0]) * cd - (p2[0] - p3[0]) * bc) / det
+        cx = (bc*(p2.y - p3.y) - cd*(p1.y - p2.y)) / det
+        cy = ((p1.x - p2.x) * cd - (p2.x - p3.x) * bc) / det
 
-        radius = np.sqrt((cx - p1[0])**2 + (cy - p1[1])**2)
+        radius = np.sqrt((cx - p1.x)**2 + (cy - p1.y)**2)
         return radius
 
 
@@ -463,31 +466,24 @@ class VehicleDecision():
         min_turn_radius = math.inf
         min_turn_point = None
         for i in range(len(predicted_pos)-2):
-            p1 = [predicted_pos[i].x,  predicted_pos[i].y]
-            p2 = [predicted_pos[i+1].x,  predicted_pos[i+1].y]
-            p3 = [predicted_pos[i+2].x,  predicted_pos[i+2].y]
-            turn_radius = self.define_circle(p1, p2, p3)
+            predicted_pos[i].z = 0.0
+            predicted_pos[i+1].z = 0.0
+            predicted_pos[i+2].z = 0.0
+            # p1 = [predicted_pos[i].x,  predicted_pos[i].y]
+            # p2 = [predicted_pos[i+1].x,  predicted_pos[i+1].y]
+            # p3 = [predicted_pos[i+2].x,  predicted_pos[i+2].y]
+            turn_radius = self.define_circle(predicted_pos[i], predicted_pos[i+1], predicted_pos[i+2])
             if turn_radius < min_turn_radius:
                 min_turn_radius = turn_radius
                 min_turn_point = predicted_pos[i]
 
         #visualization
-        if min_turn_point != None:
-            self.world.debug.draw_line(carla.Location(min_turn_point.x, min_turn_point.y, 0.0), carla.Location(min_turn_point.x, min_turn_point.y, 2.0), color=carla.Color(255, 0, 0), life_time=0.1)
+        # if min_turn_point != None:
+        #     self.world.debug.draw_line(carla.Location(min_turn_point.x, min_turn_point.y, 0.0), carla.Location(min_turn_point.x, min_turn_point.y, 2.0), color=carla.Color(255, 0, 0), life_time=0.1)
 
         return min_turn_radius
 
-    def skidding_control(self, currentState):
-        # look for deviation from the predicted plan, update friction coeffecient accordingly
-        currentSpeed = math.sqrt(currentState[1][0]**2 + currentState[1][1]**2)
-        currentPose = carla.Location(currentState[0][0], currentState[0][1], 0)
-        predicted_pose = self.old_prediction
-        for i in range(len(predicted_pose)-1):
-
-            break
-        return
-
-    def get_speed(self, plan_full, currentState, lookahead):  # use model predictive control to calculate target speed
+    def get_speed(self, plan_full, currentState, obstacle_list, lookahead):  # use model predictive control to calculate target speed
         plan = [plan_full[0]]
         for p in plan_full:
             if p.distance(plan[-1]) < 0.5:  # track plan with line segments of 0.5m
@@ -501,6 +497,18 @@ class VehicleDecision():
             #     break
             nodes += [(plan[i], plan[i + 1])]
 
+        obs_info = [] # we only need obstacle position and clearance for safety calculation
+        for obs in obstacle_list:
+            poly = []
+            if len(obs.vertices_locations) == 0:
+                continue
+            for i in range(0, len(obs.vertices_locations), 2):
+                vec = obs.vertices_locations[i].vertex_location
+                poly.append(carla.Location(vec.x, vec.y, 0.0))
+            obs_loc = carla.Location(obs.location.x, obs.location.y, 0.0)
+            clearance = max([obs_loc.distance(p) for p in poly]) # the clearance is the max distance betweent position and vertice
+            obs_info += [(obs_loc, clearance)]
+
         global_loc = self.rearAxle(currentState)
         current_speed_square = currentState[2][0] ** 2 + currentState[2][1] ** 2
         self.pos_history.append(global_loc)
@@ -511,16 +519,8 @@ class VehicleDecision():
         # current_speed = np.clip(math.sqrt(currentState[2][0]**2 + currentState[2][1]**2),self.min_speed, self.max_speed)
         # rospy.logwarn(current_speed)
 
-        if (global_loc.x - plan[-1].x) ** 2 + (global_loc.y - plan[-1].y) ** 2 < lookahead ** 2 or (
-                global_loc.x - plan[0].x) ** 2 + (global_loc.y - plan[0].y) ** 2 > lookahead ** 2:
-            # outliars for not following the pure-pursuit regime
-            # use max curvature of the plan directly
-            min_turn_radius = np.clip(self.get_min_turn_radius(plan), 1e-4, 1e4)
-            speed = np.clip(math.sqrt(self.friction_coeff * min_turn_radius * 9.81), self.min_speed, self.max_speed)
-            self.old_prediction = None
-            return speed
-
         total_pred_len = 0.0
+        safety_margin = math.sqrt(current_speed_square)*0.8
         while current_node_ind < len(nodes):
             current_node = nodes[current_node_ind]  # move on to the next line segment
             (relative_loc, relative_angle) = self.map_to_line_segment(current_node, global_loc, global_angle)
@@ -542,14 +542,33 @@ class VehicleDecision():
                 predicted_pos.append(temp)
             (global_loc, global_angle) = self.line_segment_to_map(current_node, relative_loc, relative_angle)
             current_node_ind += 1
-            if total_pred_len >= 12.0:
+
+            if total_pred_len < safety_margin:
+                car_loc = carla.Location(global_loc.x, global_loc.y, 0)
+                car_rot = carla.Rotation(0, np.degrees(global_angle), 0)
+                car2map = carla.Transform(car_loc, car_rot)
+                loc_in_car = carla.Location(self.wheelbase/2., .0, .0)
+                ego_loc = carla.Location(car2map.transform(loc_in_car))
+                ego_clearance = self.wheelbase*0.75
+                for (obs_loc, obs_clearance) in obs_info:
+                    if global_loc.distance(obs_loc) < ego_clearance + obs_clearance:
+                        #plan is not safe
+                        for i in range(len(predicted_pos)-1):
+                            self.world.debug.draw_line(
+                                carla.Location(predicted_pos[i].x, predicted_pos[i].y, 1.5), carla.Location(predicted_pos[i+1].x, predicted_pos[i+1].y, 1.5),
+                                color=carla.Color(0, 0, 255), life_time=0.1)
+                        self.world.debug.draw_point(
+                            carla.Location(global_loc.x, global_loc.y, 1.5), self.wheelbase,
+                            color=carla.Color(255, 0, 0), life_time=0.1)
+                        return 5.0
+
+            if total_pred_len >= 10.0:
                 break
 
         min_deviation_point = None
         # update friction coeffecient
         # rospy.logwarn(len(self.pos_history))
-        if len(
-                self.pos_history) == 3 and self.old_prediction != None:  # enough data point to estimate actual vehicle path's curvature
+        if len(self.pos_history) == 3 and self.old_prediction != None:  # enough data point to estimate actual vehicle path's curvature
             path_radius = np.clip(self.define_circle(self.pos_history[0], self.pos_history[1], self.pos_history[2]),
                                   1e-4, 1e4)
             min_deviation_from_plan = math.inf
@@ -565,7 +584,7 @@ class VehicleDecision():
                 self.friction_coeff = min(max(self.friction_coeff, current_speed_square / (path_radius * 9.81)),
                                           self.friction_coeff + 0.2)
                 # rospy.logwarn(self.friction_coeff)
-            if min_deviation_from_plan > 0.5:
+            if min_deviation_from_plan > 0.3:
                 self.friction_coeff = max(min(self.friction_coeff, current_speed_square / (path_radius * 9.81)),
                                           self.friction_coeff - 0.2)
             self.pos_history.pop(0)
@@ -615,10 +634,9 @@ class VehicleDecision():
         self.pubPlannerInput(
             currentState, obstacleList if obstacleList != None else [])
 
-        if len(self.plan) == 0:
-            print('No plans received yet.')
-            return [0, 0, 0]
-
+        if len(self.plan) < 5 or self.plan_update > 5:
+            # plan too short or hasn't been updated recently
+            return [self.lane_info.lane_markers_center.location[0].x, self.lane_info.lane_markers_center.location[0].y, 5.0]
 
         # setting lookahead distance dynamically by speed:
         # currentSpeed = np.clip(math.sqrt(currentState[1][0]**2 + currentState[1][1]**2), 0.0, self.max_speed)
@@ -626,39 +644,43 @@ class VehicleDecision():
         # rospy.logwarn(self.lookahead)
         # Find the waypoint with lookahead distance from real axle
         ra = self.rearAxle_to_map(currentState, carla.Location())
+
+        # pad plan to make it more predictable
         if ra.distance(self.plan[0]) >= self.lookahead:
-            print('Plan does not start in the lookahead disk!')
-            target = self.plan[0]
-        elif ra.distance(self.plan[-1]) <= self.lookahead:
-            print('Plan does not end outside of the lookahead disk!')
-            target = self.plan[-1]
-        else:
-            for i, loc in enumerate(self.plan):
-                if (loc.x - ra.x) ** 2 + (loc.y - ra.y) ** 2 > self.lookahead ** 2:
-                    break
-            p_in = self.map_to_rearAxle(currentState, self.plan[i - 1])
-            p_out = self.map_to_rearAxle(currentState, self.plan[i])
+            rospy.logwarn("plan does not start within lookahead circle")
+            self.plan = [self.rearAxle_to_map(currentState, carla.Location(self.wheelbase*1.5, 0, 0))] + self.plan
 
-            # Intercept the lookahead circle with the plan segment (p_in, p_out)
-            x1 = p_in.x
-            y1 = p_in.y
-            x2 = p_out.x
-            y2 = p_out.y
-            dx = x2 - x1
-            dy = y2 - y1
-            A = dx * dx + dy * dy
-            B = x1 * dx + y1 * dy
-            C = x1 * x1 + y1 * y1 - self.lookahead ** 2
-            t = (-B + math.sqrt(B * B - A * C)) / A
+        # cannot make reasonable prediction based on plan
+        if ra.distance(self.plan[-1]) <= self.lookahead:
+            return [self.lane_info.lane_markers_center.location[0].x, self.lane_info.lane_markers_center.location[0].y, 5.0]
 
-            target_in_rearAxle = carla.Location(x1 + t * dx, y1 + t * dy, 0)
-            target = self.rearAxle_to_map(currentState, target_in_rearAxle)
+        for i, loc in enumerate(self.plan):
+            if (loc.x - ra.x) ** 2 + (loc.y - ra.y) ** 2 > self.lookahead ** 2:
+                break
+        p_in = self.map_to_rearAxle(currentState, self.plan[i - 1])
+        p_out = self.map_to_rearAxle(currentState, self.plan[i])
 
-        speed = self.get_speed(self.plan, currentState, self.lookahead)
+        # Intercept the lookahead circle with the plan segment (p_in, p_out)
+        x1 = p_in.x
+        y1 = p_in.y
+        x2 = p_out.x
+        y2 = p_out.y
+        dx = x2 - x1
+        dy = y2 - y1
+        A = dx * dx + dy * dy
+        B = x1 * dx + y1 * dy
+        C = x1 * x1 + y1 * y1 - self.lookahead ** 2
+        t = (-B + math.sqrt(B * B - A * C)) / A
+
+        target_in_rearAxle = carla.Location(x1 + t * dx, y1 + t * dy, 0)
+        target = self.rearAxle_to_map(currentState, target_in_rearAxle)
+
+        speed = self.get_speed(self.plan, currentState, obstacleList, self.lookahead)
         currentSpeed = math.sqrt(currentState[2][0] ** 2 + currentState[2][1] ** 2)
         print(f'speed: {currentSpeed:.2f}, target speed: {speed:.2f}')
 
-        # The latest target computed by plannerCallback
+        self.plan_update = min(20, self.plan_update + 1) # keep track of when plan was updated
+
         return [target.x, target.y, speed]
 
 
